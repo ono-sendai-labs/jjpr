@@ -614,6 +614,56 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_commit_segment_kept_whole_in_stack() {
+        // trunk -> commit_a (step-a) -> commit_t1 -> commit_t2 (step-b)
+        // step-b's segment must contain both of its commits, with the
+        // oldest last — this is what merge's rebase_root consumes.
+        let entries_from_b = vec![
+            make_log_entry("commit_t2", "change_t2", vec!["commit_t1"], vec!["step-b"]),
+            make_log_entry("commit_t1", "change_t1", vec!["commit_a"], vec![]),
+            make_log_entry("commit_a", "change_a", vec!["trunk"], vec!["step-a"]),
+        ];
+        let jj = StubJj {
+            bookmarks: vec![
+                make_bookmark("step-a", "commit_a", "change_a"),
+                make_bookmark("step-b", "commit_t2", "change_t2"),
+            ],
+            log_entries: HashMap::from([
+                (
+                    "commit_a".to_string(),
+                    vec![make_log_entry(
+                        "commit_a",
+                        "change_a",
+                        vec!["trunk"],
+                        vec!["step-a"],
+                    )],
+                ),
+                ("commit_t2".to_string(), entries_from_b),
+            ]),
+        };
+
+        let graph = build_change_graph(&jj).unwrap();
+        assert_eq!(graph.stacks.len(), 1);
+        let stack = &graph.stacks[0];
+        assert_eq!(stack.segments.len(), 2);
+
+        assert_eq!(stack.segments[0].bookmarks[0].name, "step-a");
+        assert_eq!(stack.segments[0].changes.len(), 1);
+
+        assert_eq!(stack.segments[1].bookmarks[0].name, "step-b");
+        assert_eq!(
+            stack.segments[1].changes.len(),
+            2,
+            "step-b segment must include its non-tip commit"
+        );
+        assert_eq!(
+            stack.segments[1].changes.last().unwrap().change_id,
+            "change_t1",
+            "oldest commit last for rebase_root"
+        );
+    }
+
+    #[test]
     fn test_merge_commit_included_in_stack() {
         // A merge bookmark should now be included in a stack, not excluded.
         let jj = StubJj {
