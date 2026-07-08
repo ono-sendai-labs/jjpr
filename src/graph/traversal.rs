@@ -19,8 +19,12 @@ pub struct TraversalResult {
 
 /// Traverse from a bookmark's commit toward trunk, discovering segments.
 ///
-/// A segment is a group of consecutive changes between two bookmarked changes
-/// (or between trunk and a bookmarked change).
+/// A segment is a bookmarked change plus the consecutive unbookmarked
+/// changes below it, down to (but excluding) the next bookmarked change
+/// or trunk — i.e. changes between two bookmarks group into the *upper*
+/// bookmark's segment. Within a segment, changes are ordered newest-first:
+/// the bookmarked change is `changes.first()` and the oldest change is
+/// `changes.last()`.
 ///
 /// Stops early when hitting a change that was already fully collected.
 /// When a merge commit is encountered, follows `parents[0]` and skips other arms.
@@ -64,9 +68,10 @@ pub fn traverse_and_discover_segments(
         }
 
         // Handle merge commits: pick first parent, skip others
+        let mut entry_merge_source_names: Vec<String> = Vec::new();
         if entry.parents.len() > 1 {
             let followed_parent = entry.parents[0].clone();
-            let skipped_names: Vec<String> = entry.parents[1..]
+            entry_merge_source_names = entry.parents[1..]
                 .iter()
                 .map(|cid| {
                     commit_id_to_bookmark
@@ -75,8 +80,6 @@ pub fn traverse_and_discover_segments(
                         .unwrap_or_else(|| cid[..cid.len().min(12)].to_string())
                 })
                 .collect();
-
-            current_segment_merge_source_names.extend(skipped_names);
 
             let path = on_path.get_or_insert_with(HashSet::new);
             path.insert(followed_parent);
@@ -135,9 +138,20 @@ pub fn traverse_and_discover_segments(
 
         let is_bookmarked = bookmark_change_ids.contains(&entry.change_id);
 
-        current_segment_changes.push(entry.clone());
-
         if is_bookmarked {
+            // A bookmarked change starts a new segment (the walk is
+            // newest-first). Everything accumulated so far sits above this
+            // bookmark and belongs to the previous segment — flush it. The
+            // unbookmarked changes that follow, down to the next bookmark
+            // or trunk, are part of this bookmark's PR.
+            if !current_segment_changes.is_empty() {
+                segments.push(BookmarkSegment {
+                    bookmarks: std::mem::take(&mut current_segment_bookmarks),
+                    changes: std::mem::take(&mut current_segment_changes),
+                    merge_source_names: std::mem::take(&mut current_segment_merge_source_names),
+                });
+            }
+
             let mut matching_bookmarks: Vec<Bookmark> = all_bookmarks
                 .values()
                 .filter(|b| b.change_id == entry.change_id)
@@ -145,16 +159,14 @@ pub fn traverse_and_discover_segments(
                 .collect();
             matching_bookmarks.sort_by(|a, b| a.name.cmp(&b.name));
             current_segment_bookmarks.extend(matching_bookmarks);
-
-            segments.push(BookmarkSegment {
-                bookmarks: std::mem::take(&mut current_segment_bookmarks),
-                changes: std::mem::take(&mut current_segment_changes),
-                merge_source_names: std::mem::take(&mut current_segment_merge_source_names),
-            });
         }
+
+        current_segment_changes.push(entry.clone());
+        current_segment_merge_source_names.extend(entry_merge_source_names);
     }
 
-    // Flush remaining changes as a segment (unbookmarked tail)
+    // Flush the last segment (the lowest bookmark's changes down to trunk,
+    // or an unbookmarked tail when the walk started below any bookmark)
     if !current_segment_changes.is_empty() {
         segments.push(BookmarkSegment {
             bookmarks: current_segment_bookmarks,
@@ -458,6 +470,82 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_commit_segment_includes_commits_below_bookmark() {
+        // trunk -> c1 (unbookmarked) -> c2 (bookmarked "feat")
+        // Both commits belong to feat's segment; the oldest must be at
+        // changes.last() so rebase_root rebases the whole chain.
+        let bookmark = make_bookmark("feat", "c2", "ch2");
+        let all_bookmarks = HashMap::from([("feat".to_string(), bookmark)]);
+
+        let jj = StubJj {
+            entries: vec![
+                entry("c2", "ch2", vec!["c1"]),
+                entry("c1", "ch1", vec!["trunk"]),
+            ],
+        };
+
+        let result = traverse_and_discover_segments(
+            &jj,
+            "c2",
+            &HashSet::new(),
+            &all_bookmarks,
+        )
+        .unwrap();
+
+        assert_eq!(result.segments.len(), 1, "one bookmark => one segment");
+        let segment = &result.segments[0];
+        assert_eq!(segment.bookmarks[0].name, "feat");
+        assert_eq!(segment.changes.len(), 2);
+        assert_eq!(segment.changes[0].change_id, "ch2", "tip first");
+        assert_eq!(
+            segment.changes.last().unwrap().change_id,
+            "ch1",
+            "oldest commit last, so rebase_root picks it"
+        );
+    }
+
+    #[test]
+    fn test_multi_commit_upper_segment_does_not_leak_into_lower() {
+        // trunk -> a1 (bookmarked "step-a") -> t1 (unbookmarked) -> t2 (bookmarked "step-b")
+        // t1 belongs to step-b's segment (grouped into the upper bookmark's
+        // PR), not step-a's.
+        let a = make_bookmark("step-a", "ca1", "cha1");
+        let b = make_bookmark("step-b", "ct2", "cht2");
+        let all_bookmarks = HashMap::from([
+            ("step-a".to_string(), a),
+            ("step-b".to_string(), b),
+        ]);
+
+        let jj = StubJj {
+            entries: vec![
+                entry("ct2", "cht2", vec!["ct1"]),
+                entry("ct1", "cht1", vec!["ca1"]),
+                entry("ca1", "cha1", vec!["trunk"]),
+            ],
+        };
+
+        let result = traverse_and_discover_segments(
+            &jj,
+            "ct2",
+            &HashSet::new(),
+            &all_bookmarks,
+        )
+        .unwrap();
+
+        assert_eq!(result.segments.len(), 2);
+        let step_b = &result.segments[0];
+        assert_eq!(step_b.bookmarks[0].name, "step-b");
+        assert_eq!(step_b.changes.len(), 2, "step-b owns t2 and t1");
+        assert_eq!(step_b.changes[0].change_id, "cht2");
+        assert_eq!(step_b.changes.last().unwrap().change_id, "cht1");
+
+        let step_a = &result.segments[1];
+        assert_eq!(step_a.bookmarks[0].name, "step-a");
+        assert_eq!(step_a.changes.len(), 1, "step-a owns only a1");
+        assert_eq!(step_a.changes[0].change_id, "cha1");
+    }
+
+    #[test]
     fn test_stops_at_fully_collected() {
         let jj = StubJj {
             entries: vec![
@@ -605,9 +693,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.foreign_base, Some("coworker-base".to_string()));
-        assert_eq!(result.segments.len(), 2);
+        assert_eq!(result.segments.len(), 1);
         assert_eq!(result.segments[0].bookmarks[0].name, "my-feat");
-        assert_eq!(result.segments[1].changes[0].change_id, "ch2");
+        // ch2 sits below my-feat's bookmark, above the foreign base:
+        // it belongs to my-feat's segment.
+        assert_eq!(result.segments[0].changes.len(), 2);
+        assert_eq!(result.segments[0].changes[1].change_id, "ch2");
     }
 
     #[test]
@@ -648,7 +739,8 @@ mod tests {
     #[test]
     fn test_unbookmarked_merge_before_bookmarked() {
         // Leaf(bookmarked) → Merge(unbookmarked, parents: p1, p2) → trunk
-        // Merge info lands on the unbookmarked tail, not the bookmarked segment.
+        // The unbookmarked merge below the leaf is part of the leaf's
+        // segment, so the merge note lands on the leaf's PR.
         let leaf = make_bookmark("leaf", "cl", "chl");
         let all_bookmarks = HashMap::from([("leaf".to_string(), leaf)]);
 
@@ -667,21 +759,21 @@ mod tests {
         )
         .unwrap();
 
-        // Leaf's segment should have no merge info (it's not a merge)
+        assert_eq!(result.segments.len(), 1);
         assert_eq!(result.segments[0].bookmarks[0].name, "leaf");
-        assert!(
-            result.segments[0].merge_source_names.is_empty(),
-            "bookmark above merge should not carry merge note"
+        assert_eq!(result.segments[0].changes.len(), 2);
+        assert_eq!(
+            result.segments[0].merge_source_names,
+            vec!["cp2"],
+            "merge note from the segment's own merge commit"
         );
-        // The merge info is on the unbookmarked tail segment
-        assert_eq!(result.segments.len(), 2);
-        assert!(!result.segments[1].merge_source_names.is_empty());
     }
 
     #[test]
     fn test_consecutive_unbookmarked_merges_accumulate() {
         // Leaf(bookmarked) → M1(unbookmarked, merge of X,Y) → M2(unbookmarked, merge of Z,W) → Root(bookmarked)
-        // Both merges' source names should accumulate, not overwrite.
+        // M1 and M2 belong to leaf's segment; both merges' source names
+        // should accumulate there, not overwrite each other.
         let leaf = make_bookmark("leaf", "cl", "chl");
         let root = make_bookmark("root", "cr", "chr");
         let all_bookmarks = HashMap::from([
@@ -708,16 +800,18 @@ mod tests {
         )
         .unwrap();
 
-        // Leaf gets its own segment (no merge info)
+        // Leaf's segment contains Leaf, M1, and M2; both merges' source
+        // names accumulate on it.
         assert_eq!(result.segments[0].bookmarks[0].name, "leaf");
-        assert!(result.segments[0].merge_source_names.is_empty());
-
-        // Root's segment contains M1 and M2 (unbookmarked) plus Root.
-        // Both merges' source names should be accumulated.
-        assert_eq!(result.segments[1].bookmarks[0].name, "root");
-        assert_eq!(result.segments[1].merge_source_names.len(), 2);
+        assert_eq!(result.segments[0].changes.len(), 3);
+        assert_eq!(result.segments[0].merge_source_names.len(), 2);
         // cy (short commit_id fallback) from M1, cw from M2
-        assert!(result.segments[1].merge_source_names.contains(&"cy".to_string()));
-        assert!(result.segments[1].merge_source_names.contains(&"cw".to_string()));
+        assert!(result.segments[0].merge_source_names.contains(&"cy".to_string()));
+        assert!(result.segments[0].merge_source_names.contains(&"cw".to_string()));
+
+        // Root's segment is just Root, with no merge info.
+        assert_eq!(result.segments[1].bookmarks[0].name, "root");
+        assert_eq!(result.segments[1].changes.len(), 1);
+        assert!(result.segments[1].merge_source_names.is_empty());
     }
 }
