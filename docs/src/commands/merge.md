@@ -53,6 +53,26 @@ just never merged.
 
 CLI flags override the config file.
 
+## Recovery when a merged bottom vanished
+
+On repos with "automatically delete head branches", a merged bottom
+PR's branch deletion can propagate through `jj git fetch` before jjpr
+ever observes the merge. The bookmark then disappears from the local
+graph and the merged commits are absorbed, unbookmarked, into the next
+segment — with nothing left to trigger the post-merge sync.
+
+`jjpr merge` and `jjpr watch` detect this state (via the stack
+navigation data and the merged PR's head commit still being present
+locally) and run the same reconcile a normal merge would have: rebase
+the stranded stack onto the base, push, and retarget.
+
+```
+  'auth' was merged externally and its branch deleted; syncing the local stack...
+  Fetching remotes...
+  Rebasing remaining stack onto main...
+  Pushing 'profile'...
+```
+
 ## Retry on transient errors
 
 Merge API calls retry automatically on transient HTTP errors (502,

@@ -181,6 +181,16 @@ pub trait StackNav: Send + Sync {
         pr: &PullRequest,
     ) -> Result<bool>;
 
+    /// Read the existing machine-readable stack data, if any. Makes at
+    /// most one API call (none for description-based nav).
+    fn read(
+        &self,
+        forge: &dyn Forge,
+        owner: &str,
+        repo: &str,
+        pr: &PullRequest,
+    ) -> Result<Option<StackCommentData>>;
+
     /// Read existing data, merge with new entries, and write the result.
     /// Returns true if content was written or updated.
     ///
@@ -210,6 +220,19 @@ impl StackNav for CommentNav {
     ) -> Result<bool> {
         let comments = forge.list_comments(owner, repo, pr.number)?;
         Ok(find_stack_comment(&comments).is_some())
+    }
+
+    fn read(
+        &self,
+        forge: &dyn Forge,
+        owner: &str,
+        repo: &str,
+        pr: &PullRequest,
+    ) -> Result<Option<StackCommentData>> {
+        let comments = forge.list_comments(owner, repo, pr.number)?;
+        Ok(find_stack_comment(&comments)
+            .and_then(|c| c.body.as_deref())
+            .and_then(parse_comment_data))
     }
 
     fn update(
@@ -294,6 +317,20 @@ impl StackNav for DescriptionNav {
         pr: &PullRequest,
     ) -> Result<bool> {
         Ok(pr.body.as_deref().is_some_and(|b| b.contains(NAV_START)))
+    }
+
+    fn read(
+        &self,
+        _forge: &dyn Forge,
+        _owner: &str,
+        _repo: &str,
+        pr: &PullRequest,
+    ) -> Result<Option<StackCommentData>> {
+        Ok(pr
+            .body
+            .as_deref()
+            .and_then(Self::extract_section)
+            .and_then(parse_comment_data))
     }
 
     fn update(

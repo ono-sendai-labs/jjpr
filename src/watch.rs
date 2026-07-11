@@ -316,6 +316,24 @@ fn run_merge_phase(
     // after a lower merge, never merged themselves.
     let merge_scope = merge_scope.min(segments.len());
 
+    // Repair a stack whose merged bottom vanished from the local graph
+    // (branch auto-delete beat our fetch) before evaluating anything —
+    // no AlreadyMerged transition will ever fire for it.
+    if let Some(fresh) = crate::merge::execute::reconcile_vanished_bottom(
+        jj, forge, segments, merge_plan, forge_kind, &pr_map, state,
+    ) {
+        pr_map = fresh;
+    }
+    if state.degraded() {
+        return Ok(MergePhaseOutcome {
+            merged,
+            skipped,
+            blocked: None,
+            all_done: false,
+            waiting_on_block: false,
+        });
+    }
+
     while seg_idx < merge_scope {
         let segment = &segments[seg_idx];
         let status = match evaluate_segment(
