@@ -277,7 +277,16 @@ impl Jj for JjRunner {
         // Working-copy-aware: jj updates the checkout only if `@` is in the
         // rebased subtree (proven in tests/rebase_working_copy.rs — ignoring it
         // there strands the user with a stale working copy).
-        self.run_stack_op(source, &["rebase", "-s", source, "-d", destination])?;
+        //
+        // --skip-emptied: commits whose content already landed on the
+        // destination (e.g. a squash-merged bottom absorbed into the next
+        // segment) become empty on rebase and must not linger in the stack
+        // or get pushed onto PR branches. Deliberately-empty commits are
+        // unaffected — jj only abandons commits *emptied by* the rebase.
+        self.run_stack_op(
+            source,
+            &["rebase", "-s", source, "-d", destination, "--skip-emptied"],
+        )?;
         Ok(())
     }
 

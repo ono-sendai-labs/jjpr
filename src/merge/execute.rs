@@ -44,11 +44,12 @@ fn reconcile_local_state(
     repo: &str,
     pr_map: Option<&HashMap<String, PullRequest>>,
     segments: &[NarrowedSegment],
-    seg_idx: usize,
+    rebase_from: usize,
     effective_base: &str,
     remote_name: &str,
     strategy: crate::config::ReconcileStrategy,
     fk: ForgeKind,
+    skip_if_based: bool,
 ) -> Vec<LocalDivergenceWarning> {
     let mut warnings = Vec::new();
 
@@ -102,8 +103,12 @@ fn reconcile_local_state(
     // would dismiss standing approvals under branch protection for nothing.
     // (A squash landing drops the merged commit from trunk, so the descendant's
     // parent is orphaned and this is false — the rebase genuinely runs.)
-    if seg_idx + 1 < segments.len() {
-        let root = rebase_root(&segments[seg_idx + 1]);
+    //
+    // `skip_if_based` is false for a vanished merged bottom: there the squashed
+    // commits are still IN the stack, parented on the old trunk, so the check
+    // reads "already based" while the rebase is exactly what drops them.
+    if skip_if_based && rebase_from < segments.len() {
+        let root = rebase_root(&segments[rebase_from]);
         if jj.is_rooted_in(root, effective_base).unwrap_or(false) {
             println!("  Remaining stack already based on {effective_base}; skipping rebase");
             return warnings;
@@ -118,7 +123,7 @@ fn reconcile_local_state(
             // base. This is append-only; pushes are fast-forward, no force.
             println!("  Syncing remaining stack with {effective_base}...");
             let mut succeeded = Vec::new();
-            for seg in &segments[seg_idx + 1..] {
+            for seg in &segments[rebase_from..] {
                 if let Err(e) = jj.merge_into(&seg.bookmark.name, effective_base) {
                     warnings.push(mk(format!(
                         "Failed to merge-sync '{}': {e}",
@@ -163,7 +168,7 @@ fn reconcile_local_state(
             succeeded
         }
         crate::config::ReconcileStrategy::Rebase => {
-            let next_segment = &segments[seg_idx + 1];
+            let next_segment = &segments[rebase_from];
 
             // Check the rebase root as well as the bookmark tip. `rebase_onto`
             // below addresses the segment by its root, which for a multi-commit
@@ -232,7 +237,7 @@ fn reconcile_local_state(
             // checking only the tip lets exactly the case this guard exists for
             // slip through to a bare "Won't push commit <sha>".
             let mut clean = Vec::new();
-            for seg in &segments[seg_idx + 1..] {
+            for seg in &segments[rebase_from..] {
                 let range = segment_range(seg);
                 match jj.is_conflicted(&range) {
                     Ok(false) => clean.push(seg.bookmark.name.as_str()),
@@ -360,7 +365,8 @@ fn reconcile_forge_state(
     forge: &dyn Forge,
     nav: &dyn comment::StackNav,
     segments: &[NarrowedSegment],
-    seg_idx: usize,
+    next_idx: usize,
+    merged_names: &std::collections::HashSet<&str>,
     owner: &str,
     repo: &str,
     effective_base: &str,
@@ -386,7 +392,7 @@ fn reconcile_forge_state(
     };
     let fresh_map = crate::forge::build_pr_map(fresh_prs, owner);
 
-    let next_name = &segments[seg_idx + 1].bookmark.name;
+    let next_name = &segments[next_idx].bookmark.name;
     if let Some(next_pr) = fresh_map.get(next_name)
         && next_pr.base.ref_name != effective_base
     {
@@ -423,12 +429,7 @@ fn reconcile_forge_state(
     }
 
     // Update stack nav on remaining open PRs to mark resolved segments.
-    let merged_names: std::collections::HashSet<&str> = segments[..=seg_idx]
-        .iter()
-        .map(|s| s.bookmark.name.as_str())
-        .collect();
-
-    for seg in &segments[seg_idx + 1..] {
+    for seg in &segments[next_idx..] {
         let Some(pr) = fresh_map.get(&seg.bookmark.name) else {
             continue;
         };
@@ -437,7 +438,7 @@ fn reconcile_forge_state(
             let Some(data) = previous_data else {
                 return (vec![], vec![]);
             };
-            partition_after_merge(&data.stack, &merged_names, &seg_name)
+            partition_after_merge(&data.stack, merged_names, &seg_name)
         });
         if let Err(e) = result {
             warnings.push(mk(format!(
@@ -530,11 +531,12 @@ pub(crate) fn reconcile_after_merge(
         repo,
         pr_map,
         segments,
-        seg_idx,
+        seg_idx + 1,
         effective_base,
         &plan.remote_name,
         plan.options.reconcile_strategy,
         fk,
+        true,
     );
     // Ordinary local-sync failures need a manual rebase (local_failed). A
     // concurrent op-log reconcile was handled work-preservingly (Concurrent
@@ -544,17 +546,30 @@ pub(crate) fn reconcile_after_merge(
     }
     state.warnings.extend(warnings);
 
+    let merged_names: std::collections::HashSet<&str> = segments[..=seg_idx]
+        .iter()
+        .map(|s| s.bookmark.name.as_str())
+        .collect();
     let nav = comment::create_stack_nav(plan.stack_nav);
     let outcome = reconcile_forge_state(
         forge,
         nav.as_ref(),
         segments,
-        seg_idx,
+        seg_idx + 1,
+        &merged_names,
         owner,
         repo,
         effective_base,
         fk,
     );
+    apply_forge_outcome(state, outcome)
+}
+
+/// Fold a forge-reconcile outcome into `state` and hand back its fresh PR map.
+fn apply_forge_outcome(
+    state: &mut ReconcileState,
+    outcome: ForgeReconcileOutcome,
+) -> Option<HashMap<String, PullRequest>> {
     if !outcome.warnings.is_empty() {
         state.forge_failed = true;
         state.warnings.extend(outcome.warnings);
@@ -565,6 +580,136 @@ pub(crate) fn reconcile_after_merge(
         state.native_stack_block = outcome.native_stack_block;
     }
     outcome.fresh_map
+}
+
+/// How many of the newest fossil entries from the stack-nav data to probe
+/// with `find_merged_pr` when checking for a vanished merged bottom. The
+/// realistic case is the most recent fossil; the cap bounds API calls for
+/// stacks with long histories.
+const VANISHED_BOTTOM_PROBE_CAP: usize = 3;
+
+/// Detect a stack whose bottom PR landed externally and then *vanished*
+/// from the local graph: GitHub's "automatically delete head branches"
+/// removed the merged bookmark, `jj git fetch` propagated the deletion,
+/// and the merged commits were absorbed unbookmarked into the (new)
+/// bottom segment. In that state no segment ever evaluates as
+/// AlreadyMerged, so the post-merge reconcile never triggers and the
+/// local stack stays stranded on the pre-merge base.
+///
+/// Detection: read the bottom PR's stack-nav data, take entries that are
+/// no longer local bookmarks nor open PRs, and ask the forge for their
+/// merged PR. If a merged PR's head SHA is still one of the bottom
+/// segment's local commits, the stack sits on already-merged commits.
+/// The SHA match makes false positives impossible (an old, already
+/// rebased-past fossil's head SHA no longer exists in the segment).
+///
+/// Cheap pre-filter: a stale bottom segment necessarily carries at least
+/// one foreign commit in addition to its own, so single-change bottoms
+/// skip the forge round-trips entirely.
+pub(crate) fn find_vanished_merged_bottom(
+    forge: &dyn Forge,
+    nav: &dyn comment::StackNav,
+    segments: &[NarrowedSegment],
+    pr_map: &HashMap<String, PullRequest>,
+    owner: &str,
+    repo: &str,
+) -> Option<String> {
+    let bottom = segments.first()?;
+    if bottom.changes.len() < 2 {
+        return None;
+    }
+    let bottom_pr = pr_map.get(&bottom.bookmark.name)?;
+    let data = nav.read(forge, owner, repo, bottom_pr).ok()??;
+
+    let local_names: std::collections::HashSet<&str> =
+        segments.iter().map(|s| s.bookmark.name.as_str()).collect();
+    let mut candidates: Vec<&comment::StackCommentItem> = data
+        .stack
+        .iter()
+        .filter(|item| {
+            !local_names.contains(item.bookmark_name.as_str())
+                && !pr_map.contains_key(&item.bookmark_name)
+        })
+        .collect();
+    // Probe the most recently closed first; cap the forge calls.
+    candidates.sort_by(|a, b| b.closed_at.cmp(&a.closed_at));
+
+    for item in candidates.into_iter().take(VANISHED_BOTTOM_PROBE_CAP) {
+        let Ok(Some(merged)) = forge.find_merged_pr(owner, repo, &item.bookmark_name) else {
+            continue;
+        };
+        // Local ids come from jj templates as SHORT (12-char) commit ids;
+        // the forge reports the full 40-char SHA. Prefix-match.
+        if bottom
+            .changes
+            .iter()
+            .any(|c| !c.commit_id.is_empty() && merged.head.sha.starts_with(&c.commit_id))
+        {
+            return Some(item.bookmark_name.clone());
+        }
+    }
+    None
+}
+
+/// If the stack's bottom landed externally and vanished locally (see
+/// `find_vanished_merged_bottom`), run the same reconcile that a normal
+/// AlreadyMerged transition would have run: rebase the whole stack
+/// (from segment 0) onto the effective base, push, retarget, and update
+/// stack nav. Returns a fresh PR map when reconcile refreshed it.
+pub(crate) fn reconcile_vanished_bottom(
+    jj: &dyn Jj,
+    forge: &dyn Forge,
+    segments: &[NarrowedSegment],
+    plan: &MergePlan,
+    fk: ForgeKind,
+    pr_map: &HashMap<String, PullRequest>,
+    state: &mut ReconcileState,
+) -> Option<HashMap<String, PullRequest>> {
+    let owner = &plan.repo_info.owner;
+    let repo = &plan.repo_info.repo;
+    let effective_base = plan.stack_base.as_deref().unwrap_or(&plan.default_branch);
+    let nav = comment::create_stack_nav(plan.stack_nav);
+
+    let vanished = find_vanished_merged_bottom(forge, nav.as_ref(), segments, pr_map, owner, repo)?;
+
+    println!(
+        "  '{vanished}' was merged externally and its branch deleted; \
+         syncing the local stack..."
+    );
+
+    let warnings = reconcile_local_state(
+        jj,
+        forge,
+        owner,
+        repo,
+        Some(pr_map),
+        segments,
+        0,
+        effective_base,
+        &plan.remote_name,
+        plan.options.reconcile_strategy,
+        fk,
+        false,
+    );
+    if warnings.iter().any(|w| w.kind == DivergenceKind::Local) {
+        state.local_failed = true;
+    }
+    state.warnings.extend(warnings);
+
+    let merged_names: std::collections::HashSet<&str> =
+        std::iter::once(vanished.as_str()).collect();
+    let outcome = reconcile_forge_state(
+        forge,
+        nav.as_ref(),
+        segments,
+        0,
+        &merged_names,
+        owner,
+        repo,
+        effective_base,
+        fk,
+    );
+    apply_forge_outcome(state, outcome)
 }
 
 /// The change ID to hand to `jj rebase -s ...` to rebase the entire
@@ -782,6 +927,28 @@ pub fn execute_merge_plan(
     let fresh_prs = github.list_open_prs(owner, repo)?;
     let mut pr_map: Option<HashMap<String, PullRequest>> =
         Some(crate::forge::build_pr_map(fresh_prs, owner));
+
+    // A merged-and-branch-deleted bottom can vanish from the local graph
+    // before we ever see it (fetch propagates the deletion), leaving the
+    // stack stranded with no AlreadyMerged transition to trigger the
+    // reconcile. Detect and repair that up front.
+    if let Some(ref map) = pr_map {
+        if let Some(fresh) =
+            reconcile_vanished_bottom(jj, github, segments, plan, fk, map, &mut state)
+        {
+            pr_map = Some(fresh);
+        }
+        if let Some(first) = segments.first()
+            && let Some(blocked) = gate_after_reconcile(&state, first, pr_map.as_ref(), fk)
+        {
+            return Ok(MergeResult {
+                merged,
+                blocked_at: Some(blocked),
+                skipped_merged,
+                local_warnings: state.warnings,
+            });
+        }
+    }
 
     for (seg_idx, segment) in segments.iter().enumerate() {
         let status = if let Some(ref map) = pr_map {
@@ -1168,6 +1335,7 @@ mod tests {
         checks: HashMap<String, ChecksStatus>,
         reviews: HashMap<u64, ReviewSummary>,
         dismiss_stale: HashMap<String, Option<bool>>,
+        comments: HashMap<u64, Vec<IssueComment>>,
     }
 
     impl RecordingGitHub {
@@ -1180,6 +1348,7 @@ mod tests {
                 checks: HashMap::new(),
                 reviews: HashMap::new(),
                 dismiss_stale: HashMap::new(),
+                comments: HashMap::new(),
             }
         }
 
@@ -1282,17 +1451,29 @@ mod tests {
         fn request_reviewers(&self, _o: &str, _r: &str, _n: u64, _revs: &[String]) -> Result<()> {
             unimplemented!()
         }
-        fn list_comments(&self, _o: &str, _r: &str, _i: u64) -> Result<Vec<IssueComment>> {
-            Ok(vec![])
+        fn list_comments(&self, _o: &str, _r: &str, i: u64) -> Result<Vec<IssueComment>> {
+            self.calls
+                .lock()
+                .expect("poisoned")
+                .push(format!("list_comments:#{i}"));
+            Ok(self.comments.get(&i).cloned().unwrap_or_default())
         }
-        fn create_comment(&self, _o: &str, _r: &str, _i: u64, _b: &str) -> Result<IssueComment> {
-            unimplemented!()
+        fn create_comment(&self, _o: &str, _r: &str, i: u64, _b: &str) -> Result<IssueComment> {
+            self.calls
+                .lock()
+                .expect("poisoned")
+                .push(format!("create_comment:#{i}"));
+            Ok(IssueComment { id: 1, body: None })
         }
         fn delete_comment(&self, _: &str, _: &str, _: u64) -> Result<()> {
             unimplemented!()
         }
-        fn update_comment(&self, _o: &str, _r: &str, _id: u64, _b: &str) -> Result<()> {
-            unimplemented!()
+        fn update_comment(&self, _o: &str, _r: &str, id: u64, _b: &str) -> Result<()> {
+            self.calls
+                .lock()
+                .expect("poisoned")
+                .push(format!("update_comment:{id}"));
+            Ok(())
         }
         fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> Result<()> {
             unimplemented!()
@@ -1904,6 +2085,207 @@ mod tests {
             "still retargets base"
         );
         assert!(result.local_warnings.is_empty());
+    }
+
+    /// Build a stack-nav comment body whose JJPR_DATA lists `auth`
+    /// (merged fossil, PR #1) below `profile` (live, PR #2).
+    fn vanished_bottom_comment() -> IssueComment {
+        let live = vec![comment::StackEntry {
+            bookmark_name: "profile".to_string(),
+            pr_url: Some("https://github.com/o/r/pull/2".to_string()),
+            pr_number: Some(2),
+            is_current: true,
+            is_merged: false,
+            closed_at: None,
+        }];
+        let fossils = vec![comment::StackEntry {
+            bookmark_name: "auth".to_string(),
+            pr_url: Some("https://github.com/o/r/pull/1".to_string()),
+            pr_number: Some(1),
+            is_current: false,
+            is_merged: true,
+            closed_at: Some("2026-01-01T00:00:00Z".to_string()),
+        }];
+        IssueComment {
+            id: 77,
+            body: Some(comment::generate_comment_body(&live, &fossils)),
+        }
+    }
+
+    /// A profile segment that still carries the vanished bottom's commit:
+    /// its own change on top, auth's original commit (unbookmarked, now
+    /// absorbed into this segment) below.
+    fn stranded_profile_segment() -> NarrowedSegment {
+        let mut seg = make_segment("profile");
+        seg.changes.push(LogEntry {
+            commit_id: "c_auth_orig".to_string(),
+            change_id: "ch_auth_orig".to_string(),
+            author_name: "Test".to_string(),
+            author_email: "test@test.com".to_string(),
+            description: "Add auth".to_string(),
+            description_first_line: "Add auth".to_string(),
+            parents: vec![],
+            local_bookmarks: vec![],
+            remote_bookmarks: vec![],
+            is_working_copy: false,
+            conflict: false,
+            empty: false,
+        });
+        seg
+    }
+
+    /// Forge state for a stack whose bottom `auth` (PR #1) was squash-merged
+    /// and its branch deleted: `profile` (PR #2, unapproved so nothing merges)
+    /// carries a stack comment naming `auth`, whose merged head SHA is still
+    /// the oldest commit of the local `profile` segment.
+    fn vanished_bottom_github() -> RecordingGitHub {
+        let mut gh = RecordingGitHub::new().with_evaluatable_pr("profile", 2);
+        // profile blocks on approvals so nothing merges — the reconcile is
+        // the only thing that should touch local state.
+        gh.reviews.insert(
+            2,
+            ReviewSummary {
+                approved_count: 0,
+                changes_requested: false,
+            },
+        );
+        gh.comments.insert(2, vec![vanished_bottom_comment()]);
+        gh.merged_prs.insert(
+            "auth".to_string(),
+            PullRequest {
+                merged_at: Some("2026-01-01T00:00:00Z".to_string()),
+                head: PullRequestRef {
+                    ref_name: "auth".to_string(),
+                    label: String::new(),
+                    // Full 40-char-style SHA; the local segment holds the
+                    // short id "c_auth_orig" — prefix-matched.
+                    sha: "c_auth_orig0000000000000000000000000000".to_string(),
+                },
+                ..make_pr("auth", 1)
+            },
+        );
+
+        gh
+    }
+
+    /// The merged bottom's bookmark vanished from the local graph (branch
+    /// auto-delete propagated through fetch) before jjpr ever saw an
+    /// AlreadyMerged transition. The pre-loop check must detect it via the
+    /// stack-nav fossil + merged head SHA and rebase the stranded stack.
+    #[test]
+    fn test_vanished_merged_bottom_triggers_reconcile() {
+        let jj = RecordingJj::new();
+        let gh = vanished_bottom_github();
+        let plan = make_plan_single_mergeable("profile", 2);
+        let segments = vec![stranded_profile_segment()];
+
+        let result = execute_merge_plan(&jj, &gh, &plan, &segments, false).unwrap();
+
+        // The whole segment — including the absorbed foreign commit — is
+        // rebased from its oldest change onto main and pushed.
+        let jj_calls = jj.calls();
+        assert!(jj_calls.contains(&"git_fetch".to_string()));
+        assert!(
+            jj_calls
+                .iter()
+                .any(|c| c.starts_with("rebase:ch_auth_orig:main")),
+            "should rebase from the segment's oldest change: {jj_calls:?}"
+        );
+        assert!(jj_calls.iter().any(|c| c == "push:profile:origin"));
+        // Nothing merged: profile still lacks approvals.
+        assert!(result.merged.is_empty());
+        assert!(!gh.calls().iter().any(|c| c.starts_with("merge_pr:")));
+    }
+
+    /// The absorbed squash-merged commit is parented on the OLD trunk, which
+    /// is still an ancestor of the new one, so `is_rooted_in` reads "already
+    /// based". The rebase must run anyway: it is what drops the merged commit
+    /// (via --skip-emptied). Skipping it left the PR bloated with the merged
+    /// commit — caught by parity scenario 08 after upstream added the skip.
+    #[test]
+    fn test_vanished_merged_bottom_rebases_even_when_rooted_in_trunk() {
+        let jj = RecordingJj::rooted();
+        let gh = vanished_bottom_github();
+        let plan = make_plan_single_mergeable("profile", 2);
+        let segments = vec![stranded_profile_segment()];
+
+        execute_merge_plan(&jj, &gh, &plan, &segments, false).unwrap();
+
+        let jj_calls = jj.calls();
+        assert!(
+            jj_calls
+                .iter()
+                .any(|c| c.starts_with("rebase:ch_auth_orig:main")),
+            "vanished-bottom recovery must not take the already-based skip: {jj_calls:?}"
+        );
+        assert!(jj_calls.iter().any(|c| c == "push:profile:origin"));
+    }
+
+    /// An old fossil whose head SHA is no longer in the local segment must
+    /// NOT trigger a rebase — the stack was already reconciled past it.
+    #[test]
+    fn test_stale_fossil_without_matching_sha_does_not_reconcile() {
+        let jj = RecordingJj::new();
+        let mut gh = RecordingGitHub::new().with_evaluatable_pr("profile", 2);
+        gh.reviews.insert(
+            2,
+            ReviewSummary {
+                approved_count: 0,
+                changes_requested: false,
+            },
+        );
+        gh.comments.insert(2, vec![vanished_bottom_comment()]);
+        gh.merged_prs.insert(
+            "auth".to_string(),
+            PullRequest {
+                merged_at: Some("2026-01-01T00:00:00Z".to_string()),
+                head: PullRequestRef {
+                    ref_name: "auth".to_string(),
+                    label: String::new(),
+                    sha: "sha_no_longer_local".to_string(),
+                },
+                ..make_pr("auth", 1)
+            },
+        );
+
+        let plan = make_plan_single_mergeable("profile", 2);
+        let segments = vec![stranded_profile_segment()];
+
+        execute_merge_plan(&jj, &gh, &plan, &segments, false).unwrap();
+
+        assert!(
+            !jj.calls().iter().any(|c| c.starts_with("rebase:")),
+            "no SHA match → no rebase: {:?}",
+            jj.calls()
+        );
+    }
+
+    /// A single-change bottom segment cannot be carrying foreign merged
+    /// commits, so the check must skip the forge round-trips entirely.
+    #[test]
+    fn test_single_change_bottom_skips_vanished_bottom_probe() {
+        let jj = RecordingJj::new();
+        let mut gh = RecordingGitHub::new().with_evaluatable_pr("profile", 2);
+        gh.reviews.insert(
+            2,
+            ReviewSummary {
+                approved_count: 0,
+                changes_requested: false,
+            },
+        );
+        gh.comments.insert(2, vec![vanished_bottom_comment()]);
+
+        let plan = make_plan_single_mergeable("profile", 2);
+        let segments = vec![make_segment("profile")];
+
+        execute_merge_plan(&jj, &gh, &plan, &segments, false).unwrap();
+
+        assert!(
+            !gh.calls().iter().any(|c| c.starts_with("list_comments:")),
+            "single-change bottom must not read stack nav: {:?}",
+            gh.calls()
+        );
+        assert!(jj.calls().is_empty());
     }
 
     #[test]
@@ -3009,9 +3391,12 @@ mod tests {
             blocked.reasons
         );
 
-        // Should NOT have called merge_pr for profile
+        // Should NOT have merged or retargeted profile (read-only calls
+        // like list_comments are fine)
         assert!(
-            !gh.calls().iter().any(|c| c.contains("#2")),
+            !gh.calls()
+                .iter()
+                .any(|c| c.starts_with("merge_pr:#2") || c.starts_with("update_base:#2")),
             "should not merge profile when CI is pending: {:?}",
             gh.calls()
         );
@@ -4042,6 +4427,7 @@ mod tests {
     }
 
     fn reconcile_two(jj: &dyn Jj) -> Vec<LocalDivergenceWarning> {
+        // "bottom" just merged; rebase everything from index 1 up.
         let segments = vec![make_segment("bottom"), make_segment("top")];
         let gh = RecordingGitHub::new();
         reconcile_local_state(
@@ -4051,11 +4437,12 @@ mod tests {
             "r",
             None,
             &segments,
-            0,
+            1,
             "main",
             "origin",
             crate::config::ReconcileStrategy::Rebase,
             ForgeKind::GitHub,
+            true,
         )
     }
 
