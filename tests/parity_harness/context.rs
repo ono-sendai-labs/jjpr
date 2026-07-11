@@ -66,8 +66,10 @@ impl ParityContext {
             std::fs::write(self.repo_path.join(&prefixed_file), &entry.content)
                 .expect("write stack file");
             self.run_jj(&["commit", "-m", &entry.message]);
-            let bookmark = self.prefixed(&entry.bookmark);
-            self.run_jj(&["bookmark", "set", &bookmark, "-r", "@-"]);
+            if let Some(name) = &entry.bookmark {
+                let bookmark = self.prefixed(name);
+                self.run_jj(&["bookmark", "set", &bookmark, "-r", "@-"]);
+            }
         }
     }
 
@@ -84,6 +86,16 @@ impl ParityContext {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// Turn the PR whose head is the given prefixed bookmark back into a draft.
+    pub fn mark_draft(&self, bookmark: &str) {
+        let full_repo = full_repo();
+        let status = Command::new("gh")
+            .args(["pr", "ready", bookmark, "--undo", "--repo", &full_repo])
+            .status()
+            .expect("gh pr ready --undo");
+        assert!(status.success(), "gh pr ready --undo failed for {bookmark}");
     }
 
     /// Externally admin-merge the PR whose head is the given prefixed bookmark.
