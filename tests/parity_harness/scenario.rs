@@ -49,6 +49,10 @@ pub enum SetupStep {
         bookmark: String,
         method: AdminMergeMethod,
     },
+    /// Retarget the PR whose head is `bookmark` to a new base branch, as
+    /// jjpr's forge reconcile would after merging the segment below it.
+    /// `base` is a bookmark name (auto-prefixed) or "main".
+    RetargetPr { bookmark: String, base: String },
     /// Repoint a git remote to a different URL. Be aware: this also
     /// changes the owner/repo jjpr derives for forge API calls, so for
     /// most "break-the-fetch" scenarios prefer `set_git_config` instead.
@@ -63,6 +67,11 @@ pub enum SetupStep {
     /// scenario can let jjpr merge the PRs below it itself and then inspect
     /// the rest of the stack after the post-merge reconcile.
     MarkDraft { bookmark: String },
+    /// Delete the bookmark's branch on the forge, as "Automatically delete
+    /// head branches" does after a merge, then fetch so the deletion also
+    /// removes the local bookmark. Tolerates the repo having auto-deleted
+    /// the branch already.
+    DeleteBranch { bookmark: String },
     /// Poll the forge until the named PR's `mergeable` field is no longer
     /// UNKNOWN. Use after operations that invalidate forge mergeability
     /// (admin merge of bottom, base auto-retarget) so the run's evaluate
