@@ -26,7 +26,10 @@ pub struct Scenario {
 
 #[derive(Debug, Deserialize)]
 pub struct StackEntry {
-    pub bookmark: String,
+    /// Bookmark to set on this commit. Omit to leave the commit
+    /// unbookmarked — it then belongs to the segment of the next
+    /// bookmarked entry above it (multi-commit PR).
+    pub bookmark: Option<String>,
     pub file: String,
     pub content: String,
     pub message: String,
@@ -55,6 +58,10 @@ pub enum SetupStep {
     /// SSH-backed git fetch/push without touching the remote URL.
     /// The forge API path is unaffected (it uses GITHUB_TOKEN over HTTPS).
     SetGitConfig { key: String, value: String },
+    /// Write the repo-local jjpr config (`.jj/jjpr.toml`) in the cloned
+    /// test repo, e.g. to exercise config-driven behavior like
+    /// `pr_title_from = "oldest"`. Overwrites any existing content.
+    WriteRepoConfig { content: String },
     /// Poll the forge until the named PR's `mergeable` field is no longer
     /// UNKNOWN. Use after operations that invalidate forge mergeability
     /// (admin merge of bottom, base auto-retarget) so the run's evaluate
@@ -88,6 +95,11 @@ impl AdminMergeMethod {
 #[derive(Debug, Deserialize)]
 pub struct RunSpec {
     pub command: JjprCommand,
+    /// Bookmark to target (unprefixed). Defaults to the topmost bookmarked
+    /// stack entry. Set it to a lower bookmark to exercise partial-stack
+    /// behavior, e.g. `jjpr merge <bottom>` with an upstack left open.
+    #[serde(default)]
+    pub target: Option<String>,
     #[serde(default)]
     pub extra_args: Vec<String>,
     /// Only meaningful for `watch`. Forces `--timeout` so the loop exits.
@@ -166,13 +178,24 @@ pub struct PrExpectation {
     /// Expected base ref name (e.g. "main", "auth").
     pub base: Option<String>,
 
+    /// Expected PR title (exact match).
+    pub title: Option<String>,
+
     /// Maximum allowed commit count on the PR. Guards against bloated diffs
     /// when local rebase fails to bring the PR up to date with its new base.
     pub commit_count_max: Option<u64>,
 
+    /// Minimum required commit count on the PR. Guards against dropped
+    /// commits when a rebase strands part of a multi-commit segment.
+    pub commit_count_min: Option<u64>,
+
     /// Maximum allowed (additions + deletions) on the PR. Stronger guard
     /// against bloated diffs.
     pub diff_lines_max: Option<u64>,
+
+    /// Minimum required (additions + deletions) on the PR. Guards against
+    /// silently dropped changes.
+    pub diff_lines_min: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]

@@ -1,0 +1,62 @@
+name = "merge-bottom-rebases-upstack"
+description = """
+Regression guard for the "merging a non-top bookmark strands the rest of
+the stack" bug.
+
+Setup: 2-bookmark stack (auth, profile), submit both PRs. Then run
+`jjpr merge auth` — targeting the BOTTOM bookmark, not the top.
+
+The bug: segments were resolved only up to the target, so after merging
+auth there was "nothing above it" from the plan's point of view and the
+post-merge reconcile never ran: no fetch, no rebase, no push. profile's
+branch kept auth's commit (GitHub auto-retargets its base to main when
+the auth branch is deleted, so the PR silently shows a bloated diff) and
+the local stack stayed on the pre-merge base.
+
+Expected behavior after the fix:
+  - auth: merged (target scope).
+  - profile: NOT merged — it is above the target — but rebased onto main,
+    pushed, and retargeted, so its PR contains only its own commit.
+
+--no-ci-check because the testing repo has no CI configured;
+--required-approvals 0 so jjpr itself performs the merge of auth.
+"""
+
+[[stack]]
+bookmark = "auth"
+file = "auth.rs"
+content = "// auth module\n"
+message = "Add authentication"
+
+[[stack]]
+bookmark = "profile"
+file = "profile.rs"
+content = "// profile module\n"
+message = "Add user profile"
+
+[[setup]]
+type = "submit"
+
+[[setup]]
+type = "wait_for_mergeable"
+bookmark = "auth"
+
+[run]
+command = "merge"
+target = "auth"
+extra_args = ["--no-ci-check", "--required-approvals", "0"]
+
+[expect]
+exit_status = "success"
+stdout_contains = ["Rebasing remaining stack onto main"]
+
+[[expect.pr]]
+bookmark = "auth"
+state = "merged"
+
+[[expect.pr]]
+bookmark = "profile"
+state = "open"
+base = "main"
+commit_count_max = 1
+diff_lines_max = 5

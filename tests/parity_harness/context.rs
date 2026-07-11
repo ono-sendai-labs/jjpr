@@ -5,8 +5,42 @@ use tempfile::TempDir;
 
 use super::scenario::{AdminMergeMethod, StackEntry};
 
-pub const OWNER: &str = "michaeldhopkins";
-pub const REPO: &str = "jjpr-testing-environment";
+/// Default upstream testing repo. Override with `JJPR_E2E_REPO=owner/repo`
+/// (and optionally `JJPR_E2E_CLONE_URL` for a non-SSH clone URL).
+const DEFAULT_OWNER: &str = "michaeldhopkins";
+const DEFAULT_REPO: &str = "jjpr-testing-environment";
+
+fn repo_slug() -> &'static (String, String) {
+    static SLUG: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    SLUG.get_or_init(|| match std::env::var("JJPR_E2E_REPO") {
+        Ok(v) => {
+            let (owner, repo) = v
+                .split_once('/')
+                .unwrap_or_else(|| panic!("JJPR_E2E_REPO must be 'owner/repo', got '{v}'"));
+            (owner.to_string(), repo.to_string())
+        }
+        Err(_) => (DEFAULT_OWNER.to_string(), DEFAULT_REPO.to_string()),
+    })
+}
+
+pub fn owner() -> &'static str {
+    &repo_slug().0
+}
+
+pub fn repo() -> &'static str {
+    &repo_slug().1
+}
+
+pub fn full_repo() -> String {
+    format!("{}/{}", owner(), repo())
+}
+
+/// Clone URL for the testing repo. Defaults to SSH; set `JJPR_E2E_CLONE_URL`
+/// to clone over HTTPS (e.g. when only a gh credential helper is configured).
+pub fn clone_url() -> String {
+    std::env::var("JJPR_E2E_CLONE_URL")
+        .unwrap_or_else(|_| format!("git@github.com:{}.git", full_repo()))
+}
 
 /// Per-scenario test context. Clones the testing repo into a temp dir,
 /// mints a unique bookmark prefix so concurrent runs don't collide, and
@@ -34,7 +68,7 @@ impl ParityContext {
         let repo_path = parent.path().join("repo");
         let dest = repo_path.to_str().expect("non-utf8 path");
 
-        let remote_url = format!("git@github.com:{OWNER}/{REPO}.git");
+        let remote_url = clone_url();
         let output = Command::new("jj")
             .args(["git", "clone", "--colocate", &remote_url, dest])
             .output()
@@ -66,8 +100,10 @@ impl ParityContext {
             std::fs::write(self.repo_path.join(&prefixed_file), &entry.content)
                 .expect("write stack file");
             self.run_jj(&["commit", "-m", &entry.message]);
-            let bookmark = self.prefixed(&entry.bookmark);
-            self.run_jj(&["bookmark", "set", &bookmark, "-r", "@-"]);
+            if let Some(name) = &entry.bookmark {
+                let bookmark = self.prefixed(name);
+                self.run_jj(&["bookmark", "set", &bookmark, "-r", "@-"]);
+            }
         }
     }
 
@@ -90,7 +126,7 @@ impl ParityContext {
     /// Used in scenarios that simulate "a maintainer merged the bottom of
     /// your stack while you weren't looking."
     pub fn external_admin_merge(&self, bookmark: &str, method: AdminMergeMethod) {
-        let full_repo = format!("{OWNER}/{REPO}");
+        let full_repo = full_repo();
         let pr = find_pr_by_head(bookmark)
             .unwrap_or_else(|| panic!("no open PR for bookmark '{bookmark}'"));
         let number = pr["number"]
@@ -112,7 +148,7 @@ impl ParityContext {
 
 impl Drop for ParityContext {
     fn drop(&mut self) {
-        let full_repo = format!("{OWNER}/{REPO}");
+        let full_repo = full_repo();
 
         // Close any still-open PRs whose head matches our prefix.
         if let Ok(output) = Command::new("gh")
@@ -168,7 +204,7 @@ impl Drop for ParityContext {
 /// Look up the open PR whose head ref equals `head`. Returns the raw
 /// JSON object so callers can pull whichever fields they need.
 pub fn find_pr_by_head(head: &str) -> Option<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr", "list", "--repo", &full_repo, "--head", head,
@@ -184,7 +220,7 @@ pub fn find_pr_by_head(head: &str) -> Option<serde_json::Value> {
 /// Look up a PR with extra detail fields (additions, deletions, commits, mergedAt).
 /// Useful for diff-size and merge-state assertions.
 pub fn fetch_pr_detail(number: u64) -> Option<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr", "view", &number.to_string(),
@@ -197,7 +233,7 @@ pub fn fetch_pr_detail(number: u64) -> Option<serde_json::Value> {
 }
 
 pub fn list_comments(number: u64) -> Vec<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "api",

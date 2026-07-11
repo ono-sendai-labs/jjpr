@@ -35,6 +35,18 @@ fn resolve_bookmark(ctx: &ParityContext, name: &str) -> String {
     ctx.prefixed(name)
 }
 
+/// The topmost bookmarked entry in the stack — the harness's target for
+/// submit/merge/watch. Entries above it (if any) would be unbookmarked
+/// and thus invisible to jjpr, so the last bookmark is always the top.
+fn top_bookmark(ctx: &ParityContext, scenario: &Scenario) -> Option<String> {
+    scenario
+        .stack
+        .iter()
+        .rev()
+        .find_map(|e| e.bookmark.as_deref())
+        .map(|name| resolve_bookmark(ctx, name))
+}
+
 /// Run all setup steps in order. Setup steps are best-effort fail-fast:
 /// if any step errors, the scenario is reported as a setup failure (not a
 /// test assertion failure).
@@ -42,11 +54,8 @@ pub fn run_setup(ctx: &ParityContext, scenario: &Scenario) -> Result<()> {
     for (i, step) in scenario.setup.iter().enumerate() {
         match step {
             SetupStep::Submit { extra_args } => {
-                let target = scenario
-                    .stack
-                    .last()
-                    .map(|e| resolve_bookmark(ctx, &e.bookmark))
-                    .ok_or_else(|| anyhow!("setup.submit needs at least one stack entry"))?;
+                let target = top_bookmark(ctx, scenario)
+                    .ok_or_else(|| anyhow!("setup.submit needs at least one bookmarked stack entry"))?;
                 let mut args: Vec<String> = vec!["submit".into(), target];
                 args.extend(extra_args.iter().cloned());
                 let out = invoke_jjpr(ctx, &args);
@@ -88,6 +97,12 @@ pub fn run_setup(ctx: &ParityContext, scenario: &Scenario) -> Result<()> {
                     ));
                 }
             }
+            SetupStep::WriteRepoConfig { content } => {
+                let path = ctx.repo_path.join(".jj").join("jjpr.toml");
+                std::fs::write(&path, content).map_err(|e| {
+                    anyhow!("setup step #{i} (write_repo_config) failed: {e}")
+                })?;
+            }
             SetupStep::WaitForMergeable { bookmark, timeout_secs } => {
                 let prefixed = resolve_bookmark(ctx, bookmark);
                 let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(60));
@@ -104,10 +119,12 @@ pub fn run_setup(ctx: &ParityContext, scenario: &Scenario) -> Result<()> {
 /// to know about the prefix.
 pub fn run_command(ctx: &ParityContext, scenario: &Scenario) -> RunOutput {
     let target = scenario
-        .stack
-        .last()
-        .map(|e| resolve_bookmark(ctx, &e.bookmark))
-        .expect("scenario must define at least one stack entry");
+        .run
+        .target
+        .as_deref()
+        .map(|name| resolve_bookmark(ctx, name))
+        .or_else(|| top_bookmark(ctx, scenario))
+        .expect("scenario must define at least one bookmarked stack entry");
 
     let mut args: Vec<String> = vec![scenario.run.command.as_str().into(), target];
     args.extend(scenario.run.extra_args.iter().cloned());
@@ -145,14 +162,14 @@ fn invoke_jjpr(ctx: &ParityContext, args: &[String]) -> RunOutput {
 /// after operations like base retargeting, so without this poll an
 /// evaluate_segment call can transiently report MergeabilityUnknown.
 fn wait_for_mergeable(prefixed_head: &str, timeout: std::time::Duration) -> Result<()> {
-    use super::context::{find_pr_by_head, OWNER, REPO};
+    use super::context::{find_pr_by_head, full_repo};
 
     let pr = find_pr_by_head(prefixed_head)
         .ok_or_else(|| anyhow!("no PR for head '{prefixed_head}'"))?;
     let number = pr["number"]
         .as_u64()
         .ok_or_else(|| anyhow!("PR for '{prefixed_head}' has no number"))?;
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let deadline = std::time::Instant::now() + timeout;
 
     while std::time::Instant::now() < deadline {

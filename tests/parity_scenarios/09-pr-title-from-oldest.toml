@@ -1,0 +1,56 @@
+name = "pr-title-from-oldest"
+description = """
+Coverage for the `pr_title_from = "oldest"` config option.
+
+A multi-commit PR usually has its main change first (oldest) and
+review-feedback fixups after. By default jjpr titles the PR after the
+NEWEST (tip) commit, so a squash merge lands with a title like
+"add widget tests" instead of "add widget". With
+`pr_title_from = "oldest"` in the repo-local config, the PR title (and
+managed body) come from the oldest commit of the segment.
+
+Setup: repo config sets pr_title_from = "oldest", then submit a stack
+whose top PR has two commits ("add widget" below "add widget tests").
+
+Expected: the widget PR is titled after the oldest commit; the
+single-commit core PR is unaffected.
+"""
+
+[[stack]]
+bookmark = "core"
+file = "core.py"
+content = "def core():\n    return \"core\"\n"
+message = "task(core): add core"
+
+# Oldest commit of the 'widget' PR — the main change.
+[[stack]]
+file = "widget.py"
+content = "def widget():\n    return \"widget\"\n"
+message = "task(widget): add widget"
+
+[[stack]]
+bookmark = "widget"
+file = "test_widget.py"
+content = "from widget import widget\n\ndef test_widget():\n    assert widget() == \"widget\"\n"
+message = "task(widget): add widget tests"
+
+[[setup]]
+type = "write_repo_config"
+content = "pr_title_from = \"oldest\"\n"
+
+[run]
+command = "submit"
+
+[expect]
+exit_status = "success"
+
+[[expect.pr]]
+bookmark = "core"
+state = "open"
+title = "task(core): add core"
+
+[[expect.pr]]
+bookmark = "widget"
+state = "open"
+base = "core"
+title = "task(widget): add widget"

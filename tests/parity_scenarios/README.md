@@ -20,6 +20,25 @@ JJPR_E2E=1 PARITY_SCENARIO=01-submit-creates-stack \
 Without `JJPR_E2E=1` the harness takes a skip path and exits clean — that's
 what runs in normal `cargo test`.
 
+## Test repo
+
+By default scenarios run against `michaeldhopkins/jjpr-testing-environment`,
+cloned over SSH. Override both with env vars:
+
+```
+JJPR_E2E=1 \
+JJPR_E2E_REPO=your-org/your-test-repo \
+JJPR_E2E_CLONE_URL=https://github.com/your-org/your-test-repo.git \
+    cargo test --test parity -- --nocapture
+```
+
+`JJPR_E2E_CLONE_URL` is optional; without it the clone uses
+`git@github.com:<JJPR_E2E_REPO>.git`. Use the HTTPS form when only a
+`gh` credential helper is configured (no SSH key). The repo should
+allow squash merges and enable "Automatically delete head branches";
+`gh` must be authenticated with push + PR-merge rights on it. The same
+variables apply to `tests/e2e.rs`.
+
 ## Schema
 
 ```toml
@@ -27,22 +46,28 @@ name = "..."
 description = "..."
 
 [[stack]]                       # build commits + bookmarks, base→top
-bookmark = "auth"
-file     = "auth.rs"
-content  = "// auth\n"
+bookmark = "auth"               # omit to leave the commit unbookmarked —
+file     = "auth.rs"            #   it then belongs to the next bookmarked
+content  = "// auth\n"          #   entry above it (multi-commit PR)
 message  = "Add authentication"
 
 [[setup]]                       # optional, run in order
-type = "submit"                 # or "external_admin_merge"
-extra_args = []
+type = "submit"                 # or "external_admin_merge",
+extra_args = []                 #    "set_remote_url", "set_git_config",
+                                #    "write_repo_config", "wait_for_mergeable"
 
 [[setup]]
 type     = "external_admin_merge"
 bookmark = "auth"
 method   = "squash"             # or "merge" / "rebase"
 
+[[setup]]
+type    = "write_repo_config"   # write .jj/jjpr.toml in the test clone
+content = "pr_title_from = \"oldest\"\n"
+
 [run]                           # the command-under-test
 command    = "submit"           # "merge" | "watch"
+target     = "auth"             # optional; defaults to the top bookmark
 extra_args = ["--no-ci-check"]
 timeout_minutes = 1             # only for watch; defaults to 1
 
@@ -55,8 +80,11 @@ stderr_not_contains = []
 bookmark         = "profile"
 state            = "open"       # open | merged | closed | absent
 base             = "main"       # bookmark name (auto-prefixed) or "main"
+title            = "Add user profile"  # exact match
 commit_count_max = 1            # bloated-diff guard
+commit_count_min = 1            # dropped-commit guard
 diff_lines_max   = 5            # bloated-diff guard
+diff_lines_min   = 1            # dropped-change guard
 
 [[expect.comment]]
 bookmark     = "profile"
