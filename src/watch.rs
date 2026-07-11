@@ -188,6 +188,7 @@ fn make_merge_plan(
         options: options.clone(),
         stack_base: stack_base.map(|s| s.to_string()),
         stack_nav,
+        merge_limit: None,
     }
 }
 
@@ -286,6 +287,7 @@ fn run_merge_phase(
     jj: &dyn Jj,
     forge: &dyn Forge,
     segments: &[NarrowedSegment],
+    merge_scope: usize,
     pr_map: &HashMap<String, PullRequest>,
     merge_options: &MergeOptions,
     merge_plan: &crate::merge::plan::MergePlan,
@@ -305,7 +307,11 @@ fn run_merge_phase(
     let mut advanced = false;
     let mut waiting_on_block = false;
 
-    while seg_idx < segments.len() {
+    // Segments past merge_scope are reconcile-only: rebased and pushed
+    // after a lower merge, never merged themselves.
+    let merge_scope = merge_scope.min(segments.len());
+
+    while seg_idx < merge_scope {
         let segment = &segments[seg_idx];
         let status = match evaluate_segment(
             forge,
@@ -471,7 +477,7 @@ fn run_merge_phase(
         merged,
         skipped,
         blocked: None,
-        all_done: seg_idx >= segments.len() && advanced,
+        all_done: seg_idx >= merge_scope && advanced,
         waiting_on_block,
     })
 }
@@ -625,7 +631,7 @@ pub fn run_watch_loop(
         state.reset();
 
         // --- Phase 1: Re-discover segments ---
-        let segments = match rediscover_segments(jj, target_bookmark) {
+        let (segments, merge_scope) = match rediscover_segments(jj, target_bookmark) {
             Ok(segs) => {
                 consecutive_errors = 0;
                 segs
@@ -682,7 +688,7 @@ pub fn run_watch_loop(
         }
 
         // --- Phase 2: Submit (push + create draft PRs) ---
-        let bookmarks_being_created = match run_submit_phase(jj, forge, &segments, remote_name, repo_info, forge_kind, default_branch, stack_base, stack_nav, submit_opts) {
+        let bookmarks_being_created = match run_submit_phase(jj, forge, &segments[..merge_scope], remote_name, repo_info, forge_kind, default_branch, stack_base, stack_nav, submit_opts) {
             Ok(names) => {
                 consecutive_errors = 0;
                 names
@@ -733,7 +739,7 @@ pub fn run_watch_loop(
         }
 
         // --- Phase 4: Promote draft PRs with passing CI ---
-        let promoted = promote_ready_drafts(forge, &segments, &pr_map, repo_info, forge_kind);
+        let promoted = promote_ready_drafts(forge, &segments[..merge_scope], &pr_map, repo_info, forge_kind);
 
         // Refresh PR map after promotions so evaluate_segment sees updated draft status
         let pr_map = if !promoted.is_empty() {
@@ -747,7 +753,7 @@ pub fn run_watch_loop(
 
         // --- Phase 5: Merge phase (bottom-up) ---
         let merge_outcome = run_merge_phase(
-            jj, forge, &segments, &pr_map, merge_options, &merge_plan,
+            jj, forge, &segments, merge_scope, &pr_map, merge_options, &merge_plan,
             forge_kind, &mut prev_reasons, &mut consecutive_errors,
             &mut last_heartbeat, &mut state, is_tty,
         )?;
@@ -870,7 +876,7 @@ fn print_initial_watch_status(
         return;
     };
     let pr_map = crate::forge::build_pr_map(initial_prs, owner);
-    let segments = rediscover_segments(jj, target_bookmark).unwrap_or_default();
+    let (segments, _) = rediscover_segments(jj, target_bookmark).unwrap_or_default();
     let with_pr: Vec<_> = segments.iter()
         .filter(|s| pr_map.contains_key(&s.bookmark.name))
         .collect();
@@ -1007,22 +1013,34 @@ fn report_reconcile_failure(
 /// trunk), falls back to inferring the target from the working copy's position.
 /// This handles the case where mid-stack merges change the graph while the
 /// leaf bookmark is gone.
+/// Returns the full stack's segments (in-scope segments up to the target,
+/// then any upstack segments above it) plus the merge scope: how many
+/// leading segments are in submit/merge scope. Upstack segments are never
+/// merged, but post-merge reconcile rebases them so a `jjpr watch
+/// <non-top-bookmark>` doesn't strand the rest of the local stack.
 fn rediscover_segments(
     jj: &dyn Jj,
     target_bookmark: &str,
-) -> Result<Vec<NarrowedSegment>> {
+) -> Result<(Vec<NarrowedSegment>, usize)> {
+    fn narrow(a: &analyze::SubmissionAnalysis) -> Result<(Vec<NarrowedSegment>, usize)> {
+        let mut segments = resolve::resolve_bookmark_selections(&a.relevant_segments, false)?;
+        let merge_scope = segments.len();
+        segments.extend(resolve::resolve_bookmark_selections(&a.upstack_segments, false)?);
+        Ok((segments, merge_scope))
+    }
+
     let graph = change_graph::build_change_graph(jj)?;
 
     match analyze::analyze_submission_graph(&graph, target_bookmark) {
-        Ok(a) => resolve::resolve_bookmark_selections(&a.relevant_segments, false),
+        Ok(a) => narrow(&a),
         Err(_) => {
             // Target bookmark gone — try inferring from working copy
             if let Ok(Some(inferred)) = analyze::infer_target_bookmark(&graph, jj)
                 && let Ok(a) = analyze::analyze_submission_graph(&graph, &inferred)
             {
-                return resolve::resolve_bookmark_selections(&a.relevant_segments, false);
+                return narrow(&a);
             }
-            Ok(vec![])
+            Ok((vec![], 0))
         }
     }
 }
@@ -1656,6 +1674,7 @@ mod tests {
             remote_name: "origin".into(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         }
     }
 
@@ -1677,7 +1696,7 @@ mod tests {
         let mut last_heartbeat = Instant::now();
 
         let outcome = run_merge_phase(
-            &FailFetchJj, &forge, &segments, &forge.prs, &plan.options,
+            &FailFetchJj, &forge, &segments, segments.len(), &forge.prs, &plan.options,
             &plan, ForgeKind::GitHub,
             &mut prev_reasons, &mut consecutive_errors,
             &mut last_heartbeat, &mut state, false,
@@ -1823,7 +1842,7 @@ mod tests {
         let mut last_heartbeat = Instant::now();
 
         let outcome = run_merge_phase(
-            &HealthyJj, &forge, &segments, &forge.prs, &plan.options,
+            &HealthyJj, &forge, &segments, segments.len(), &forge.prs, &plan.options,
             &plan, ForgeKind::GitHub,
             &mut prev_reasons, &mut consecutive_errors,
             &mut last_heartbeat, &mut state, false,
@@ -2030,7 +2049,7 @@ mod tests {
         let mut last_heartbeat = Instant::now();
 
         let outcome = run_merge_phase(
-            &HealthyJj, &forge, &segments, &forge.prs, &plan.options,
+            &HealthyJj, &forge, &segments, segments.len(), &forge.prs, &plan.options,
             &plan, ForgeKind::GitHub,
             &mut prev_reasons, &mut consecutive_errors,
             &mut last_heartbeat, &mut state, false,

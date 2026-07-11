@@ -12,6 +12,11 @@ use crate::jj::Jj;
 pub struct SubmissionAnalysis {
     pub target_bookmark: String,
     pub relevant_segments: Vec<BookmarkSegment>,
+    /// Segments of the same stack sitting *above* the target bookmark.
+    /// Not part of the submission/merge scope, but post-merge reconcile
+    /// must rebase them too — otherwise `jjpr merge <non-top-bookmark>`
+    /// leaves the rest of the local stack stranded on the old base.
+    pub upstack_segments: Vec<BookmarkSegment>,
     /// If the stack is based on a foreign branch (not trunk), this is the branch name.
     pub base_branch: Option<String>,
 }
@@ -44,6 +49,7 @@ pub fn analyze_submission_graph(
             return Ok(SubmissionAnalysis {
                 target_bookmark: target_bookmark.to_string(),
                 relevant_segments: relevant,
+                upstack_segments: stack.segments[idx + 1..].to_vec(),
                 base_branch: stack.base_branch.clone(),
             });
         }

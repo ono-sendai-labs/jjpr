@@ -88,6 +88,11 @@ pub struct MergePlan {
     /// If the stack is based on a foreign branch, retarget the bottom PR here after merge.
     pub stack_base: Option<String>,
     pub stack_nav: crate::config::StackNavMode,
+    /// How many leading segments of the executed segment list are in merge
+    /// scope. `None` means all of them. Segments past this limit are never
+    /// merged, but post-merge reconcile still rebases/pushes them — this is
+    /// how `jjpr merge <non-top-bookmark>` keeps the upstack in sync.
+    pub merge_limit: Option<usize>,
 }
 
 /// Evaluate a single bookmark's merge readiness against current GitHub state.
@@ -238,6 +243,7 @@ pub fn create_merge_plan(
         options: options.clone(),
         stack_base: stack_base.map(|s| s.to_string()),
         stack_nav,
+        merge_limit: None,
     })
 }
 

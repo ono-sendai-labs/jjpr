@@ -570,7 +570,14 @@ pub fn execute_merge_plan(
         crate::forge::build_pr_map(fresh_prs, owner),
     );
 
-    for (seg_idx, segment) in segments.iter().enumerate() {
+    // Segments past merge_limit are reconcile-only: they get rebased and
+    // pushed after a lower merge, but are never merged themselves.
+    let merge_limit = plan
+        .merge_limit
+        .unwrap_or(segments.len())
+        .min(segments.len());
+
+    for (seg_idx, segment) in segments.iter().enumerate().take(merge_limit) {
         let status = if let Some(ref map) = pr_map {
             evaluate_segment(
                 github,
@@ -1126,6 +1133,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         }
     }
 
@@ -1192,6 +1200,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1210,6 +1219,45 @@ mod tests {
 
         // Happy path: no local warnings
         assert!(result.local_warnings.is_empty(), "happy path should have no local warnings");
+    }
+
+    /// `jjpr merge <non-top-bookmark>`: segments above the target are passed
+    /// as reconcile-only (merge_limit caps merging). The upstack PR must
+    /// never be merged, but the post-merge reconcile must still rebase and
+    /// push it — this was the "remaining stack never rebased locally" bug.
+    #[test]
+    fn test_merge_limit_reconciles_upstack_without_merging_it() {
+        let jj = RecordingJj::new();
+        let gh = RecordingGitHub::new()
+            .with_evaluatable_pr("auth", 1)
+            .with_evaluatable_pr("profile", 2);
+        gh.open_prs.lock().expect("poisoned")[1]
+            .base
+            .ref_name = "auth".to_string();
+
+        let mut plan = make_plan_single_mergeable("auth", 1);
+        plan.merge_limit = Some(1);
+        let segments = vec![make_segment("auth"), make_segment("profile")];
+
+        let result = execute_merge_plan(&jj, &gh, &plan, &segments, false).unwrap();
+
+        assert_eq!(result.merged.len(), 1);
+        assert_eq!(result.merged[0].bookmark_name, "auth");
+        assert!(result.blocked_at.is_none());
+
+        let gh_calls = gh.calls();
+        assert!(gh_calls.iter().any(|c| c == "merge_pr:#1:squash"));
+        assert!(
+            !gh_calls.iter().any(|c| c.starts_with("merge_pr:#2")),
+            "upstack PR must not be merged: {gh_calls:?}"
+        );
+        // Reconcile still runs for the upstack segment: fetch, rebase, push,
+        // and base retarget.
+        let jj_calls = jj.calls();
+        assert!(jj_calls.contains(&"git_fetch".to_string()));
+        assert!(jj_calls.iter().any(|c| c.starts_with("rebase:ch_profile:main")));
+        assert!(jj_calls.iter().any(|c| c == "push:profile:origin"));
+        assert!(gh_calls.iter().any(|c| c == "update_base:#2:main"));
     }
 
     #[test]
@@ -1251,6 +1299,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1301,6 +1350,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
 
         // Profile segment has 3 commits: tip (bookmark) + 2 intermediate.
@@ -1410,6 +1460,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1460,6 +1511,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1520,6 +1572,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![
             make_segment("auth"),
@@ -1623,6 +1676,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![
             make_segment("auth"),
@@ -1730,6 +1784,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![
             make_segment("auth"),
@@ -1785,6 +1840,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1826,6 +1882,7 @@ mod tests {
             remote_name: "upstream".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1863,6 +1920,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1898,6 +1956,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -1934,6 +1993,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth")];
 
@@ -2013,6 +2073,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -2054,6 +2115,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![
             make_segment("auth"),
@@ -2127,6 +2189,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -2178,6 +2241,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -2235,6 +2299,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: Some("coworker-feat".to_string()),
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -2442,6 +2507,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -2857,6 +2923,7 @@ mod tests {
             remote_name: "origin".into(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
         let mut state = ReconcileState {
@@ -2896,6 +2963,7 @@ mod tests {
             remote_name: "origin".into(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
         let mut state = ReconcileState::default();
@@ -2947,6 +3015,7 @@ mod tests {
             remote_name: "origin".into(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
         let jj = RecordingJj::new();
@@ -3034,6 +3103,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![
             make_segment("auth"),
@@ -3109,6 +3179,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 
@@ -3154,6 +3225,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![
             make_segment("auth"),
@@ -3202,6 +3274,7 @@ mod tests {
             remote_name: "origin".to_string(),
             stack_base: None,
             stack_nav: crate::config::StackNavMode::Comment,
+            merge_limit: None,
         };
         let segments = vec![make_segment("auth"), make_segment("profile")];
 

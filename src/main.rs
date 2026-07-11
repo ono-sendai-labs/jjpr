@@ -183,6 +183,10 @@ struct ResolvedStack {
     default_branch: String,
     config: config::Config,
     segments: Vec<jjpr::jj::types::NarrowedSegment>,
+    /// Segments of the same stack above the target bookmark. Outside the
+    /// submit/merge scope, but post-merge reconcile must rebase them so
+    /// merging a non-top bookmark doesn't strand the rest of the stack.
+    upstack_segments: Vec<jjpr::jj::types::NarrowedSegment>,
     target_bookmark: String,
     stack_base: Option<String>,
 }
@@ -241,6 +245,8 @@ fn resolve_stack(
     let analysis = analyze::analyze_submission_graph(&graph, &target_bookmark)?;
     let interactive = std::io::stdout().is_terminal();
     let segments = resolve::resolve_bookmark_selections(&analysis.relevant_segments, interactive)?;
+    // Upstack segments are reconcile-only; never prompt for them.
+    let upstack_segments = resolve::resolve_bookmark_selections(&analysis.upstack_segments, false)?;
     let stack_base = analysis.base_branch;
 
     Ok(Some(ResolvedStack {
@@ -252,6 +258,7 @@ fn resolve_stack(
         default_branch,
         config: cfg,
         segments,
+        upstack_segments,
         target_bookmark,
         stack_base,
     }))
@@ -573,7 +580,7 @@ fn cmd_merge(args: MergeArgs<'_>, dry_run: bool, no_fetch: bool) -> Result<()> {
         .or(stack.stack_base.clone());
     let stack_base = stack_base_str.as_deref();
 
-    let merge_plan = merge::plan::create_merge_plan(
+    let mut merge_plan = merge::plan::create_merge_plan(
         stack.forge.as_ref(),
         &stack.segments,
         &stack.repo_info,
@@ -584,6 +591,13 @@ fn cmd_merge(args: MergeArgs<'_>, dry_run: bool, no_fetch: bool) -> Result<()> {
         stack_base,
         stack.config.stack_nav,
     )?;
+
+    // Execute against the full stack (target scope + upstack) so post-merge
+    // reconcile also rebases segments above the target, but cap merging at
+    // the target: `jjpr merge <bookmark>` must never merge PRs above it.
+    let mut all_segments = stack.segments.clone();
+    all_segments.extend(stack.upstack_segments.iter().cloned());
+    merge_plan.merge_limit = Some(stack.segments.len());
 
     if args.watch {
         if dry_run {
@@ -611,11 +625,11 @@ fn cmd_merge(args: MergeArgs<'_>, dry_run: bool, no_fetch: bool) -> Result<()> {
     }
 
     let result = merge::execute::execute_merge_plan(
-        &stack.jj, stack.forge.as_ref(), &merge_plan, &stack.segments, dry_run,
+        &stack.jj, stack.forge.as_ref(), &merge_plan, &all_segments, dry_run,
     )?;
 
     print_merge_summary(&result);
-    print_local_warnings(&result, &stack.segments, stack_base, &stack.default_branch)
+    print_local_warnings(&result, &all_segments, stack_base, &stack.default_branch)
 }
 
 struct WatchArgs<'a> {
