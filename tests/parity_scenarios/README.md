@@ -41,6 +41,15 @@ type     = "external_admin_merge"
 bookmark = "auth"
 method   = "squash"             # or "merge" / "rebase"
 
+[[setup]]
+type     = "retarget_pr"        # move a PR's base, as jjpr's forge
+bookmark = "profile"            #   reconcile would after the segment
+base     = "main"               #   below it merged
+
+[[setup]]
+type     = "delete_branch"      # delete the branch on the forge and fetch,
+bookmark = "auth"               #   as a repo with auto-delete would
+
 [run]                           # the command-under-test
 command    = "submit"           # "merge" | "watch"
 extra_args = ["--no-ci-check"]

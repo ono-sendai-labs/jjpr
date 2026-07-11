@@ -123,6 +123,46 @@ impl ParityContext {
             "gh pr merge --admin failed for {bookmark}"
         );
     }
+
+    /// Retarget the PR whose head is the given prefixed bookmark to `base`,
+    /// like jjpr's forge reconcile does after the segment below it merges.
+    pub fn retarget_pr(&self, bookmark: &str, base: &str) {
+        let full_repo = format!("{OWNER}/{REPO}");
+        let status = Command::new("gh")
+            .args(["pr", "edit", bookmark, "--repo", &full_repo, "--base", base])
+            .status()
+            .expect("gh pr edit --base");
+        assert!(status.success(), "gh pr edit --base failed for {bookmark}");
+    }
+
+    /// Delete the branch on the forge and fetch, so the tracked local
+    /// bookmark goes away too. On a repo with "Automatically delete head
+    /// branches" enabled, GitHub may have deleted it already.
+    pub fn delete_branch(&self, bookmark: &str) {
+        let full_repo = format!("{OWNER}/{REPO}");
+        let output = Command::new("gh")
+            .args([
+                "api",
+                "-X",
+                "DELETE",
+                &format!("repos/{full_repo}/git/refs/heads/{bookmark}"),
+            ])
+            .output()
+            .expect("gh api DELETE ref");
+        let already_gone =
+            String::from_utf8_lossy(&output.stdout).contains("Reference does not exist");
+        assert!(
+            output.status.success() || already_gone,
+            "deleting branch {bookmark} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        self.run_jj(&["git", "fetch"]);
+        let left = self.run_jj(&["bookmark", "list", bookmark]);
+        assert!(
+            left.trim().is_empty(),
+            "bookmark {bookmark} survived the fetch after its branch was deleted: {left}"
+        );
+    }
 }
 
 impl Drop for ParityContext {

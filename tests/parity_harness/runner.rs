@@ -68,6 +68,15 @@ pub fn run_setup(ctx: &ParityContext, scenario: &Scenario) -> Result<()> {
                     ));
                 }
             }
+            SetupStep::RetargetPr { bookmark, base } => {
+                let prefixed = resolve_bookmark(ctx, bookmark);
+                let resolved_base = if base == "main" || base == "master" {
+                    base.clone()
+                } else {
+                    resolve_bookmark(ctx, base)
+                };
+                ctx.retarget_pr(&prefixed, &resolved_base);
+            }
             SetupStep::ExternalAdminMerge { bookmark, method } => {
                 let prefixed = resolve_bookmark(ctx, bookmark);
                 ctx.external_admin_merge(&prefixed, *method);
@@ -102,6 +111,10 @@ pub fn run_setup(ctx: &ParityContext, scenario: &Scenario) -> Result<()> {
             SetupStep::MarkDraft { bookmark } => {
                 let prefixed = resolve_bookmark(ctx, bookmark);
                 ctx.mark_draft(&prefixed);
+            }
+            SetupStep::DeleteBranch { bookmark } => {
+                let prefixed = resolve_bookmark(ctx, bookmark);
+                ctx.delete_branch(&prefixed);
             }
             SetupStep::WaitForMergeable {
                 bookmark,
