@@ -1,0 +1,77 @@
+name = "merge-recovers-vanished-bottom"
+description = """
+Regression guard for the vanished-merged-bottom bug — the primary
+mechanism behind "jjpr usually doesn't rebase the remaining stack
+after the bottom PR is merged".
+
+When the bottom PR is merged (externally or by an earlier jjpr run) and
+the repo auto-deletes head branches, the deletion can propagate through
+`jj git fetch` before jjpr ever observes the merged segment. The
+tracked bookmark disappears from the local graph, the merged commits
+are absorbed unbookmarked into the next segment, and no AlreadyMerged
+transition ever fires — so the post-merge reconcile (fetch, rebase,
+push, retarget) silently never runs. Whether it strikes depends on the
+race between GitHub's branch deletion and jjpr's fetch, which is why
+the failure is intermittent in real use.
+
+Setup reproduces the post-race state deterministically: submit a
+2-bookmark stack, admin-merge the bottom externally, then
+`jj bookmark forget --include-remotes` the merged bookmark (the branch
+is already deleted on the forge, so the next fetch cannot restore it).
+
+Expected behavior: jjpr merge detects via the stack-nav data + merged
+PR head SHA that the bottom landed externally, announces it, rebases
+the stranded stack onto main, and pushes — profile's PR must contain
+only its own commit.
+"""
+
+[[stack]]
+bookmark = "auth"
+file = "auth.rs"
+content = "// auth module\n"
+message = "Add authentication"
+
+[[stack]]
+bookmark = "profile"
+file = "profile.rs"
+content = "// profile module\n"
+message = "Add user profile"
+
+[[setup]]
+type = "submit"
+
+[[setup]]
+type = "external_admin_merge"
+bookmark = "auth"
+method = "squash"
+
+# Simulate the branch auto-delete having propagated before jjpr's fetch:
+# the local bookmark (and its remote tracking) vanish from the graph.
+[[setup]]
+type = "run_jj"
+args = ["bookmark", "forget", "--include-remotes", "{{bookmark:auth}}"]
+
+[[setup]]
+type = "wait_for_mergeable"
+bookmark = "profile"
+
+[run]
+command = "merge"
+extra_args = ["--no-ci-check"]
+
+[expect]
+exit_status = "success"
+stdout_contains = ["was merged externally and its branch deleted"]
+
+[[expect.pr]]
+bookmark = "auth"
+state = "merged"
+
+# profile blocks on approvals (default 1), but only after the recovery
+# reconcile has rebased it onto main and pushed.
+[[expect.pr]]
+bookmark = "profile"
+state = "open"
+base = "main"
+commit_count_max = 1
+diff_lines_max = 5

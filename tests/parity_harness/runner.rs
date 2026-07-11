@@ -103,6 +103,14 @@ pub fn run_setup(ctx: &ParityContext, scenario: &Scenario) -> Result<()> {
                     anyhow!("setup step #{i} (write_repo_config) failed: {e}")
                 })?;
             }
+            SetupStep::RunJj { args } => {
+                let resolved: Vec<String> = args
+                    .iter()
+                    .map(|a| super::assertions::resolve_bookmark_substring(ctx, a))
+                    .collect();
+                let arg_refs: Vec<&str> = resolved.iter().map(|s| s.as_str()).collect();
+                ctx.run_jj(&arg_refs);
+            }
             SetupStep::WaitForMergeable { bookmark, timeout_secs } => {
                 let prefixed = resolve_bookmark(ctx, bookmark);
                 let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(60));

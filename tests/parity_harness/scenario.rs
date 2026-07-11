@@ -62,6 +62,11 @@ pub enum SetupStep {
     /// test repo, e.g. to exercise config-driven behavior like
     /// `pr_title_from = "oldest"`. Overwrites any existing content.
     WriteRepoConfig { content: String },
+    /// Run an arbitrary jj command in the test clone. Args support the
+    /// `{{bookmark:NAME}}` placeholder for prefixed bookmark names. Use
+    /// for repo states no dedicated step covers (e.g. `bookmark forget`
+    /// to simulate a propagated branch auto-delete).
+    RunJj { args: Vec<String> },
     /// Poll the forge until the named PR's `mergeable` field is no longer
     /// UNKNOWN. Use after operations that invalidate forge mergeability
     /// (admin merge of bottom, base auto-retarget) so the run's evaluate

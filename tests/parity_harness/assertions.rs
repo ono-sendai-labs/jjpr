@@ -268,7 +268,7 @@ fn check_comment(ctx: &ParityContext, expect: &CommentExpectation) -> Result<()>
 /// Scenarios reference bookmarks by their unprefixed name. Substrings of the
 /// form `{{bookmark:NAME}}` get rewritten to the live prefixed name so
 /// expectations stay readable.
-fn resolve_bookmark_substring(ctx: &ParityContext, raw: &str) -> String {
+pub fn resolve_bookmark_substring(ctx: &ParityContext, raw: &str) -> String {
     let mut out = raw.to_string();
     while let Some(start) = out.find("{{bookmark:") {
         let rest = &out[start + "{{bookmark:".len()..];

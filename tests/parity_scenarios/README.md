@@ -65,6 +65,10 @@ method   = "squash"             # or "merge" / "rebase"
 type    = "write_repo_config"   # write .jj/jjpr.toml in the test clone
 content = "pr_title_from = \"oldest\"\n"
 
+[[setup]]
+type = "run_jj"                 # arbitrary jj command in the clone;
+args = ["bookmark", "forget", "{{bookmark:auth}}"]  # args support {{bookmark:NAME}}
+
 [run]                           # the command-under-test
 command    = "submit"           # "merge" | "watch"
 target     = "auth"             # optional; defaults to the top bookmark
