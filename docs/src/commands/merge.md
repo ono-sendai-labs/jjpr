@@ -32,6 +32,12 @@ commits onto the new base. Switch to merge-based reconciliation with
 [Configuration](../configuration.md)). That creates merge commits
 instead, avoiding force pushes.
 
+Targeting a bookmark below the top of the stack (`jjpr merge
+<bookmark>`) merges only the PRs up to and including that bookmark, but
+the post-merge sync still covers the whole stack: segments *above* the
+target are rebased onto the new base, pushed, and retargeted — they are
+just never merged.
+
 ## Flags
 
 | Flag | Effect |

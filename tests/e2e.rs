@@ -10,8 +10,40 @@ use jjpr::submit::{analyze, execute, plan, resolve};
 
 use tempfile::TempDir;
 
-const OWNER: &str = "michaeldhopkins";
-const REPO: &str = "jjpr-testing-environment";
+/// Default upstream testing repo. Override with `JJPR_E2E_REPO=owner/repo`
+/// (and optionally `JJPR_E2E_CLONE_URL` for a non-SSH clone URL).
+const DEFAULT_OWNER: &str = "michaeldhopkins";
+const DEFAULT_REPO: &str = "jjpr-testing-environment";
+
+fn repo_slug() -> &'static (String, String) {
+    static SLUG: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    SLUG.get_or_init(|| match std::env::var("JJPR_E2E_REPO") {
+        Ok(v) => {
+            let (owner, repo) = v
+                .split_once('/')
+                .unwrap_or_else(|| panic!("JJPR_E2E_REPO must be 'owner/repo', got '{v}'"));
+            (owner.to_string(), repo.to_string())
+        }
+        Err(_) => (DEFAULT_OWNER.to_string(), DEFAULT_REPO.to_string()),
+    })
+}
+
+fn owner() -> &'static str {
+    &repo_slug().0
+}
+
+fn repo() -> &'static str {
+    &repo_slug().1
+}
+
+fn full_repo() -> String {
+    format!("{}/{}", owner(), repo())
+}
+
+fn clone_url() -> String {
+    std::env::var("JJPR_E2E_CLONE_URL")
+        .unwrap_or_else(|_| format!("git@github.com:{}.git", full_repo()))
+}
 
 /// E2E test context: clones the testing repo, provides helpers, cleans up on Drop.
 struct E2eContext {
@@ -33,7 +65,7 @@ impl E2eContext {
         let repo_path = parent.path().join("repo");
         let dest = repo_path.to_str().expect("non-utf8 path");
 
-        let remote_url = format!("git@github.com:{OWNER}/{REPO}.git");
+        let remote_url = clone_url();
         let output = Command::new("jj")
             .args(["git", "clone", "--colocate", &remote_url, dest])
             .output()
@@ -76,7 +108,7 @@ impl E2eContext {
 
 impl Drop for E2eContext {
     fn drop(&mut self) {
-        let full_repo = format!("{OWNER}/{REPO}");
+        let full_repo = full_repo();
 
         // Close PRs with our prefix
         if let Ok(output) = Command::new("gh")
@@ -149,7 +181,7 @@ fn run_jj(dir: &Path, args: &[&str]) -> String {
 }
 
 fn find_pr(head: &str) -> Option<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr",
@@ -172,7 +204,7 @@ fn find_pr(head: &str) -> Option<serde_json::Value> {
 }
 
 fn fetch_pr_body(pr_number: u64) -> String {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr", "view", &pr_number.to_string(),
@@ -185,7 +217,7 @@ fn fetch_pr_body(pr_number: u64) -> String {
 }
 
 fn set_pr_body(pr_number: u64, body: &str) {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let status = Command::new("gh")
         .args([
             "pr", "edit", &pr_number.to_string(),
@@ -198,7 +230,7 @@ fn set_pr_body(pr_number: u64, body: &str) {
 }
 
 fn list_comments(pr_number: u64) -> Vec<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "api",
@@ -259,8 +291,8 @@ fn test_submit_creates_stacked_prs() {
     .unwrap();
 
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let submission_plan = plan::create_submission_plan(
         &github, &segments, "origin", &repo_info, ForgeKind::GitHub, "main",
@@ -270,6 +302,7 @@ fn test_submit_creates_stacked_prs() {
             reviewer_scope: jjpr::forge::types::ReviewerScope::Bottom,
             stack_base: None,
             stack_nav: jjpr::config::StackNavMode::Comment,
+            pr_title_from: jjpr::config::PrTitleSource::Newest,
             dry_run: false,
         },
     )
@@ -372,8 +405,8 @@ fn test_submit_preserves_hand_edited_description() {
         GitHubForge::new(client)
     };
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let submit = || {
         let graph = change_graph::build_change_graph(&jj).unwrap();
@@ -393,6 +426,7 @@ fn test_submit_preserves_hand_edited_description() {
                 reviewer_scope: jjpr::forge::types::ReviewerScope::Bottom,
                 stack_base: None,
                 stack_nav: jjpr::config::StackNavMode::Comment,
+                pr_title_from: jjpr::config::PrTitleSource::Newest,
                 dry_run: false,
             },
         )
@@ -463,7 +497,7 @@ fn test_merged_bottom_renders_in_fossil_details_block() {
     let ctx = E2eContext::new();
     let bottom_name = ctx.bookmark_name("bottom");
     let top_name = ctx.bookmark_name("top");
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
 
     // Build a 2-bookmark stack
     ctx.write_file(&format!("{bottom_name}.rs"), "// bottom module\n");
@@ -487,8 +521,8 @@ fn test_merged_bottom_renders_in_fossil_details_block() {
         GitHubForge::new(client)
     };
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let opts = || plan::SubmitOptions {
         draft_mode: plan::DraftMode::Default,
@@ -496,6 +530,7 @@ fn test_merged_bottom_renders_in_fossil_details_block() {
         reviewer_scope: jjpr::forge::types::ReviewerScope::Bottom,
         stack_base: None,
         stack_nav: jjpr::config::StackNavMode::Comment,
+        pr_title_from: jjpr::config::PrTitleSource::Newest,
         dry_run: false,
     };
 

@@ -18,6 +18,7 @@ required_approvals = 1
 require_ci_pass = true
 reconcile_strategy = "rebase"
 stack_nav = "comment"
+pr_title_from = "newest"
 ```
 
 ## Repo-local config
@@ -70,6 +71,20 @@ Where to show the stack navigation block.
 - `comment` (default): a separate comment on each PR.
 - `description`: embedded in the PR body. More visible to reviewers.
   Updates the body on each `submit`.
+
+### `pr_title_from`
+
+Which commit of a multi-commit PR provides the PR title and managed
+body.
+
+- `newest` (default): the tip commit of the segment.
+- `oldest`: the first (oldest) commit of the segment. In a typical
+  multi-commit PR the first commit is the main change and later commits
+  address review feedback, so `oldest` keeps squash-merge commit
+  messages meaningful (GitHub derives the squash commit title from the
+  PR title).
+
+Single-commit PRs are unaffected.
 
 ### `forge`
 

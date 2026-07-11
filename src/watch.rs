@@ -42,6 +42,9 @@ pub struct WatchSubmitOptions {
     /// ready: mark existing drafts and create new as ready). `Default`
     /// is rarely useful from watch but accepted for consistency.
     pub draft_mode: crate::submit::plan::DraftMode,
+    /// Which commit of a multi-commit segment provides the PR title/body.
+    /// Comes from config (`pr_title_from`); the CLI has no flag for it.
+    pub pr_title_from: crate::config::PrTitleSource,
 }
 
 impl Default for WatchSubmitOptions {
@@ -50,6 +53,7 @@ impl Default for WatchSubmitOptions {
             reviewers: Vec::new(),
             reviewer_scope: crate::forge::types::ReviewerScope::Bottom,
             draft_mode: crate::submit::plan::DraftMode::NewAsDraft,
+            pr_title_from: crate::config::PrTitleSource::Newest,
         }
     }
 }
@@ -72,6 +76,7 @@ impl WatchSubmitOptions {
             } else {
                 crate::submit::plan::DraftMode::NewAsDraft
             },
+            ..Self::default()
         }
     }
 }
@@ -1076,6 +1081,7 @@ fn run_submit_phase(
             reviewer_scope: submit_opts.reviewer_scope,
             stack_base,
             stack_nav,
+            pr_title_from: submit_opts.pr_title_from,
             // dry_run is meaningless inside an infinite watch loop;
             // `cmd_watch` rejects --dry-run at command entry.
             dry_run: false,

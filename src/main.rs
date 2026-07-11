@@ -309,6 +309,7 @@ fn cmd_submit(opts: SubmitOptions<'_>) -> Result<()> {
             reviewer_scope: opts.reviewer_scope,
             stack_base: stack_base_override,
             stack_nav: stack.config.stack_nav,
+            pr_title_from: stack.config.pr_title_from,
             dry_run: opts.dry_run,
         },
     )?;
@@ -735,8 +736,9 @@ fn cmd_watch(args: WatchArgs<'_>) -> Result<()> {
 
     println!("Watching stack up to '{}'...\n", stack.target_bookmark);
 
-    let submit_opts =
+    let mut submit_opts =
         jjpr::watch::WatchSubmitOptions::from_cli(reviewers.to_vec(), reviewer_scope, ready);
+    submit_opts.pr_title_from = stack.config.pr_title_from;
 
     let timeout_dur = timeout.map(|m| std::time::Duration::from_secs(m * 60));
     let result = jjpr::watch::run_watch_loop(

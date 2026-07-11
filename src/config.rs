@@ -17,6 +17,20 @@ pub enum ReconcileStrategy {
     Rebase,
 }
 
+/// Which commit of a multi-commit PR provides the PR title and body.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrTitleSource {
+    /// The newest (tip) commit of the segment (default, jjpr's historical
+    /// behavior).
+    #[default]
+    Newest,
+    /// The oldest commit of the segment. Usually the "main" change of the
+    /// PR — later commits tend to be review-feedback fixups — so squash
+    /// merges get a meaningful commit title.
+    Oldest,
+}
+
 /// Where to display stack navigation on PRs.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +69,11 @@ pub struct Config {
     /// "comment" posts a separate comment on each PR.
     /// "description" embeds the stack nav in the PR body.
     pub stack_nav: StackNavMode,
+
+    /// Which commit of a multi-commit PR provides the title/body:
+    /// "newest" (default, the tip) or "oldest" (the first commit — usually
+    /// the main change, so squash-merge commit messages stay meaningful).
+    pub pr_title_from: PrTitleSource,
 }
 
 impl Default for Config {
@@ -67,6 +86,7 @@ impl Default for Config {
             forge_token_env: None,
             reconcile_strategy: ReconcileStrategy::Rebase,
             stack_nav: StackNavMode::Comment,
+            pr_title_from: PrTitleSource::Newest,
         }
     }
 }
@@ -202,6 +222,12 @@ reconcile_strategy = "rebase"
 # "comment" posts a separate comment on each PR.
 # "description" embeds it in the PR body (more visible to reviewers).
 stack_nav = "comment"
+
+# Which commit of a multi-commit PR provides the title/body:
+# "newest" (default): the tip commit.
+# "oldest": the first commit — usually the main change, with later commits
+# addressing review feedback — so squash-merge messages stay meaningful.
+pr_title_from = "newest"
 "#;
 
 const DEFAULT_REPO_CONFIG: &str = r#"# jjpr repo-local configuration
@@ -479,6 +505,24 @@ merge_method = "squash"
     fn test_stack_nav_defaults_to_comment() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.stack_nav, StackNavMode::Comment);
+    }
+
+    #[test]
+    fn test_pr_title_from_defaults_to_newest() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.pr_title_from, PrTitleSource::Newest);
+    }
+
+    #[test]
+    fn test_parse_pr_title_from_oldest() {
+        let config: Config = toml::from_str(r#"pr_title_from = "oldest""#).unwrap();
+        assert_eq!(config.pr_title_from, PrTitleSource::Oldest);
+    }
+
+    #[test]
+    fn test_parse_invalid_pr_title_from() {
+        let result: Result<Config, _> = toml::from_str(r#"pr_title_from = "middle""#);
+        assert!(result.is_err());
     }
 
     #[test]
