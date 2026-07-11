@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod e2e_repo;
+
 use std::path::Path;
 use std::process::Command;
 

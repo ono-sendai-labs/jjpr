@@ -20,6 +20,24 @@ JJPR_E2E=1 PARITY_SCENARIO=01-submit-creates-stack \
 Without `JJPR_E2E=1` the harness takes a skip path and exits clean — that's
 what runs in normal `cargo test`.
 
+## Test repo
+
+By default scenarios run against `michaeldhopkins/forge-e2e-sandbox`,
+cloned over SSH. Override both with env vars:
+
+```
+JJPR_E2E=1 \
+JJPR_E2E_REPO=your-org/your-test-repo \
+JJPR_E2E_CLONE_URL=https://github.com/your-org/your-test-repo.git \
+    cargo test --test parity -- --nocapture
+```
+
+`JJPR_E2E_CLONE_URL` is optional; without it the clone uses
+`git@github.com:<JJPR_E2E_REPO>.git`. Use the HTTPS form when only a
+`gh` credential helper is configured (no SSH key). The repo should
+allow squash merges, and `gh` must be authenticated with push +
+PR-merge rights on it. The same variables apply to `tests/e2e.rs`.
+
 ## Schema
 
 ```toml
@@ -33,8 +51,9 @@ content  = "// auth\n"
 message  = "Add authentication"
 
 [[setup]]                       # optional, run in order
-type = "submit"                 # or "external_admin_merge"
-extra_args = []
+type = "submit"                 # or "external_admin_merge",
+extra_args = []                 #    "set_remote_url", "set_git_config",
+                                #    "wait_for_mergeable"
 
 [[setup]]
 type     = "external_admin_merge"

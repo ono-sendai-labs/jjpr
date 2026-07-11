@@ -60,6 +60,15 @@ type = "set_git_config"
 key = "core.sshCommand"
 value = "/bin/false"
 
+# Also break HTTPS-based fetch, for runs where JJPR_E2E_CLONE_URL points
+# at an https:// remote (core.sshCommand only degrades SSH clones). git
+# honors http.proxy; jjpr's forge API client does not read git config, so
+# the API path stays healthy either way.
+[[setup]]
+type = "set_git_config"
+key = "http.proxy"
+value = "http://127.0.0.1:1"
+
 # --no-fetch skips the top-level resolve_stack fetch so we don't trip on
 # core.sshCommand before reaching reconcile_local_state, which is the
 # call site whose failure exposes the sticky-degraded bug. forge API calls

@@ -9,10 +9,8 @@ use jjpr::graph::change_graph;
 use jjpr::identity::Identity;
 use jjpr::submit::{analyze, execute, plan, resolve};
 
+use common::e2e_repo::{clone_url, full_repo, owner, repo};
 use tempfile::TempDir;
-
-const OWNER: &str = "michaeldhopkins";
-const REPO: &str = "forge-e2e-sandbox";
 
 /// E2E test context: clones the testing repo, provides helpers, cleans up on Drop.
 struct E2eContext {
@@ -34,7 +32,7 @@ impl E2eContext {
         let repo_path = parent.path().join("repo");
         let dest = repo_path.to_str().expect("non-utf8 path");
 
-        let remote_url = format!("git@github.com:{OWNER}/{REPO}.git");
+        let remote_url = clone_url();
         let output = Command::new("jj")
             .args(["git", "clone", "--colocate", &remote_url, dest])
             .output()
@@ -97,7 +95,7 @@ impl E2eContext {
 
 impl Drop for E2eContext {
     fn drop(&mut self) {
-        let full_repo = format!("{OWNER}/{REPO}");
+        let full_repo = full_repo();
 
         // Close PRs with our prefix
         if let Ok(output) = Command::new("gh")
@@ -170,7 +168,7 @@ fn run_jj(dir: &Path, args: &[&str]) -> String {
 }
 
 fn find_pr(head: &str) -> Option<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr",
@@ -192,7 +190,7 @@ fn find_pr(head: &str) -> Option<serde_json::Value> {
 }
 
 fn fetch_pr_body(pr_number: u64) -> String {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr",
@@ -211,7 +209,7 @@ fn fetch_pr_body(pr_number: u64) -> String {
 }
 
 fn set_pr_body(pr_number: u64, body: &str) {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let status = Command::new("gh")
         .args([
             "pr",
@@ -228,7 +226,7 @@ fn set_pr_body(pr_number: u64, body: &str) {
 }
 
 fn list_comments(pr_number: u64) -> Vec<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "api",
@@ -379,8 +377,8 @@ fn test_submit_creates_stacked_prs() {
         resolve::resolve_bookmark_selections(&analysis.relevant_segments, false).unwrap();
 
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let submission_plan = plan::create_submission_plan(
         &github,
@@ -482,8 +480,8 @@ fn test_submit_preserves_hand_edited_description() {
         GitHubForge::new(client)
     };
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let submit = || {
         let graph = change_graph::build_change_graph(&jj).unwrap();
@@ -573,7 +571,7 @@ fn test_merged_bottom_renders_in_fossil_details_block() {
     let ctx = E2eContext::new();
     let bottom_name = ctx.bookmark_name("bottom");
     let top_name = ctx.bookmark_name("top");
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
 
     // Build a 2-bookmark stack
     ctx.write_file(&format!("{bottom_name}.rs"), "// bottom module\n");
@@ -597,8 +595,8 @@ fn test_merged_bottom_renders_in_fossil_details_block() {
         GitHubForge::new(client)
     };
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let opts = || plan::SubmitOptions {
         draft_mode: plan::DraftMode::Default,
@@ -734,7 +732,7 @@ fn test_watch_target_findable_through_bottom_squash_merge() {
     let ctx = E2eContext::new();
     let bottom_name = ctx.bookmark_name("sqbot");
     let top_name = ctx.bookmark_name("sqtop");
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
 
     ctx.write_file(&format!("{bottom_name}.rs"), "// bottom module\n");
     ctx.commit("Add bottom\n\nBottom of the stack");
@@ -756,8 +754,8 @@ fn test_watch_target_findable_through_bottom_squash_merge() {
         GitHubForge::new(client)
     };
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let opts = plan::SubmitOptions {
         draft_mode: plan::DraftMode::Default,
@@ -876,8 +874,8 @@ fn test_status_recognizes_your_pr_committed_under_another_email() {
     });
     let github = github_forge();
     let repo_info = RepoInfo {
-        owner: OWNER.to_string(),
-        repo: REPO.to_string(),
+        owner: owner().to_string(),
+        repo: repo().to_string(),
     };
     let graph = change_graph::build_change_graph(&jj).unwrap();
     let analysis = analyze::analyze_submission_graph(&graph, &name).unwrap();

@@ -33,6 +33,8 @@ JJPR_E2E=1 cargo test  # E2E against real GitHub (slow, requires gh auth)
 
 E2E tests use `michaeldhopkins/forge-e2e-sandbox` (private repo, shared across forges/projects — see the `forge-e2e-testing` skill). Each run creates uniquely-prefixed bookmarks and cleans up PRs/branches on Drop.
 
+To run the E2E and parity suites against a different repo (e.g. from a fork), set `JJPR_E2E_REPO=owner/repo` and, if SSH isn't set up, `JJPR_E2E_CLONE_URL=https://github.com/owner/repo.git`. The repo must allow squash merges; see `tests/parity_scenarios/README.md`.
+
 ### Fuzzing (project specifics)
 
 General method — the two budgets, the target-kind catalog, the seeding ladder, coverage, CI shape, the gotchas — is in the **`rust-fuzzing` skill**. How to *run* it is in `fuzz/README.md`. This section is only what is true of jjpr.

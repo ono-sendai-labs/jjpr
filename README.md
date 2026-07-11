@@ -50,7 +50,10 @@ Test tiers:
 - **jj integration**: real `jj` binary against temp repos, no network.
 - **E2E**: real `jj` and a real forge against
   [forge-e2e-sandbox](https://github.com/michaeldhopkins/forge-e2e-sandbox)
-  (shared across forges), gated by `JJPR_E2E`.
+  (shared across forges), gated by `JJPR_E2E`. To run them against your
+  own test repo instead, set `JJPR_E2E_REPO=owner/repo` (and optionally
+  `JJPR_E2E_CLONE_URL` for a non-SSH clone URL); repo requirements are in
+  [`tests/parity_scenarios/README.md`](tests/parity_scenarios/README.md).
 
 Contributor conventions live in [`AGENTS.md`](AGENTS.md).
 

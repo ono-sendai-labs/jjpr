@@ -149,14 +149,15 @@ fn invoke_jjpr(ctx: &ParityContext, args: &[String]) -> RunOutput {
 /// after operations like base retargeting, so without this poll an
 /// evaluate_segment call can transiently report MergeabilityUnknown.
 fn wait_for_mergeable(prefixed_head: &str, timeout: std::time::Duration) -> Result<()> {
-    use super::context::{OWNER, REPO, find_pr_by_head};
+    use super::context::find_pr_by_head;
+    use crate::common::e2e_repo::full_repo;
 
     let pr = find_pr_by_head(prefixed_head)
         .ok_or_else(|| anyhow!("no PR for head '{prefixed_head}'"))?;
     let number = pr["number"]
         .as_u64()
         .ok_or_else(|| anyhow!("PR for '{prefixed_head}' has no number"))?;
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let deadline = std::time::Instant::now() + timeout;
 
     while std::time::Instant::now() < deadline {

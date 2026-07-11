@@ -5,8 +5,8 @@ use tempfile::TempDir;
 
 use super::scenario::{AdminMergeMethod, StackEntry};
 
-pub const OWNER: &str = "michaeldhopkins";
-pub const REPO: &str = "forge-e2e-sandbox";
+use crate::common::e2e_repo::clone_url;
+pub use crate::common::e2e_repo::full_repo;
 
 /// Per-scenario test context. Clones the testing repo into a temp dir,
 /// mints a unique bookmark prefix so concurrent runs don't collide, and
@@ -34,7 +34,7 @@ impl ParityContext {
         let repo_path = parent.path().join("repo");
         let dest = repo_path.to_str().expect("non-utf8 path");
 
-        let remote_url = format!("git@github.com:{OWNER}/{REPO}.git");
+        let remote_url = clone_url();
         let output = Command::new("jj")
             .args(["git", "clone", "--colocate", &remote_url, dest])
             .output()
@@ -90,7 +90,7 @@ impl ParityContext {
     /// Used in scenarios that simulate "a maintainer merged the bottom of
     /// your stack while you weren't looking."
     pub fn external_admin_merge(&self, bookmark: &str, method: AdminMergeMethod) {
-        let full_repo = format!("{OWNER}/{REPO}");
+        let full_repo = full_repo();
         let pr = find_pr_by_head(bookmark)
             .unwrap_or_else(|| panic!("no open PR for bookmark '{bookmark}'"));
         let number = pr["number"].as_u64().expect("PR number").to_string();
@@ -115,7 +115,7 @@ impl ParityContext {
 
 impl Drop for ParityContext {
     fn drop(&mut self) {
-        let full_repo = format!("{OWNER}/{REPO}");
+        let full_repo = full_repo();
 
         // Close any still-open PRs whose head matches our prefix.
         if let Ok(output) = Command::new("gh")
@@ -174,7 +174,7 @@ impl Drop for ParityContext {
 /// Look up the open PR whose head ref equals `head`. Returns the raw
 /// JSON object so callers can pull whichever fields they need.
 pub fn find_pr_by_head(head: &str) -> Option<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr",
@@ -197,7 +197,7 @@ pub fn find_pr_by_head(head: &str) -> Option<serde_json::Value> {
 /// Look up a PR with extra detail fields (additions, deletions, commits, mergedAt).
 /// Useful for diff-size and merge-state assertions.
 pub fn fetch_pr_detail(number: u64) -> Option<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "pr",
@@ -214,7 +214,7 @@ pub fn fetch_pr_detail(number: u64) -> Option<serde_json::Value> {
 }
 
 pub fn list_comments(number: u64) -> Vec<serde_json::Value> {
-    let full_repo = format!("{OWNER}/{REPO}");
+    let full_repo = full_repo();
     let output = Command::new("gh")
         .args([
             "api",

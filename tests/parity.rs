@@ -13,6 +13,7 @@
 //!   JJPR_E2E=1 PARITY_SCENARIO=01-submit-creates-stack \
 //!       cargo test --test parity -- --nocapture
 
+mod common;
 mod parity_harness;
 
 use std::path::PathBuf;
@@ -92,7 +93,14 @@ fn run_one(path: &std::path::Path) -> anyhow::Result<()> {
 
     run_setup(&ctx, &scenario)?;
     let output = run_command(&ctx, &scenario);
-    assertions::check(&ctx, &scenario, &output)
+    assertions::check(&ctx, &scenario, &output).map_err(|e| {
+        // Surface the command-under-test's output on any assertion failure,
+        // not just the exit/stderr checks that already embed it.
+        e.context(format!(
+            "command output was:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            output.stdout, output.stderr
+        ))
+    })
 }
 
 fn collect_scenario_files() -> Vec<PathBuf> {
