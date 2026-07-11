@@ -1,0 +1,86 @@
+name = "merge-preserves-multicommit-segment"
+description = """
+Regression guard for the dropped-commit data-loss bug (multi-commit
+segment discovery).
+
+Setup: bottom PR 'core' has one commit; top PR 'widget' has TWO commits
+(an unbookmarked "add widget" commit below the bookmarked "add widget
+tests" commit). Submit both and turn 'widget' back into a draft, so
+that jjpr merge merges 'core' itself and then stops at 'widget'.
+
+jjpr merges 'core' rather than the harness merging it externally: with
+"Automatically delete head branches" enabled, GitHub deletes the merged
+branch about two seconds after an external merge, the next fetch drops
+the local bookmark, and jjpr never sees 'core' at all. Letting jjpr do
+the merge makes the scenario independent of that repo setting.
+
+Expected behavior:
+  - core: merged by jjpr.
+  - reconcile_after_merge rebases the WHOLE widget segment (both
+    commits) onto main, pushes it, and retargets the PR base to main.
+  - widget: blocks as a draft, so we can inspect its post-reconcile
+    state.
+
+The bug: segment discovery kept only the bookmark's tip commit, so the
+post-merge rebase used `jj rebase -s <tip>` and stranded the older
+"add widget" commit on the pre-merge main. The PR then silently lost
+that commit's changes (1 commit, only the tests file). commit_count_min
+= 2 and diff_lines_min = 6 catch exactly that.
+
+--no-ci-check because the testing repo has no CI configured, and
+--required-approvals 0 because the harness cannot approve its own PRs.
+"""
+
+[[stack]]
+bookmark = "core"
+file = "core.py"
+content = "def core():\n    return \"core\"\n"
+message = "task(core): add core"
+
+# First (older) commit of the 'widget' PR — deliberately unbookmarked;
+# it belongs to the segment of the bookmarked commit above it.
+[[stack]]
+file = "widget.py"
+content = "def widget():\n    return \"widget\"\n"
+message = "task(widget): add widget"
+
+[[stack]]
+bookmark = "widget"
+file = "test_widget.py"
+content = "from widget import widget\n\ndef test_widget():\n    assert widget() == \"widget\"\n"
+message = "task(widget): add widget tests"
+
+[[setup]]
+type = "submit"
+
+[[setup]]
+type = "mark_draft"
+bookmark = "widget"
+
+# jjpr merge evaluates 'core' right away; don't let it block on a
+# mergeability GitHub hasn't finished computing.
+[[setup]]
+type = "wait_for_mergeable"
+bookmark = "core"
+
+[run]
+command = "merge"
+extra_args = ["--no-ci-check", "--required-approvals", "0"]
+
+[expect]
+exit_status = "success"
+
+[[expect.pr]]
+bookmark = "core"
+state = "merged"
+
+[[expect.pr]]
+bookmark = "widget"
+state = "open"
+base = "main"
+# Both commits of the segment must survive the post-merge rebase.
+commit_count_min = 2
+commit_count_max = 2
+# widget.py (2 lines) + test_widget.py (4 lines) = 6 added lines.
+diff_lines_min = 6
+diff_lines_max = 8

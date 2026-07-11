@@ -27,13 +27,13 @@ name = "..."
 description = "..."
 
 [[stack]]                       # build commits + bookmarks, base→top
-bookmark = "auth"
-file     = "auth.rs"
-content  = "// auth\n"
+bookmark = "auth"               # omit to leave the commit unbookmarked —
+file     = "auth.rs"            #   it then belongs to the next bookmarked
+content  = "// auth\n"          #   entry above it (multi-commit PR)
 message  = "Add authentication"
 
 [[setup]]                       # optional, run in order
-type = "submit"                 # or "external_admin_merge"
+type = "submit"                 # or "external_admin_merge", "mark_draft"
 extra_args = []
 
 [[setup]]
@@ -56,7 +56,9 @@ bookmark         = "profile"
 state            = "open"       # open | merged | closed | absent
 base             = "main"       # bookmark name (auto-prefixed) or "main"
 commit_count_max = 1            # bloated-diff guard
+commit_count_min = 1            # dropped-commit guard
 diff_lines_max   = 5            # bloated-diff guard
+diff_lines_min   = 1            # dropped-change guard
 
 [[expect.comment]]
 bookmark     = "profile"

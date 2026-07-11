@@ -147,35 +147,58 @@ fn check_pr(ctx: &ParityContext, expect: &PrExpectation) -> Result<()> {
         }
     }
 
-    if expect.commit_count_max.is_some() || expect.diff_lines_max.is_some() {
+    if expect.commit_count_max.is_some()
+        || expect.commit_count_min.is_some()
+        || expect.diff_lines_max.is_some()
+        || expect.diff_lines_min.is_some()
+    {
         let detail = fetch_pr_detail(number)
             .ok_or_else(|| anyhow!("could not fetch detail for PR #{number}"))?;
 
-        if let Some(max) = expect.commit_count_max {
-            let actual = detail["commits"]
-                .as_array()
-                .map(|a| a.len() as u64)
-                .unwrap_or(0);
-            if actual > max {
-                bail!(
-                    "PR #{number} for '{}' had {actual} commits, expected ≤ {max} \
-                     (likely a bloated-diff regression — local rebase did not run)",
-                    expect.bookmark
-                );
-            }
+        let commits = detail["commits"]
+            .as_array()
+            .map(|a| a.len() as u64)
+            .unwrap_or(0);
+        if let Some(max) = expect.commit_count_max
+            && commits > max
+        {
+            bail!(
+                "PR #{number} for '{}' had {commits} commits, expected ≤ {max} \
+                 (likely a bloated-diff regression — local rebase did not run)",
+                expect.bookmark
+            );
+        }
+        if let Some(min) = expect.commit_count_min
+            && commits < min
+        {
+            bail!(
+                "PR #{number} for '{}' had {commits} commits, expected ≥ {min} \
+                 (likely a dropped-commit regression — rebase stranded part of \
+                 a multi-commit segment)",
+                expect.bookmark
+            );
         }
 
-        if let Some(max) = expect.diff_lines_max {
-            let additions = detail["additions"].as_u64().unwrap_or(0);
-            let deletions = detail["deletions"].as_u64().unwrap_or(0);
-            let total = additions + deletions;
-            if total > max {
-                bail!(
-                    "PR #{number} for '{}' had {total} changed lines, expected ≤ {max} \
-                     (likely a bloated-diff regression)",
-                    expect.bookmark
-                );
-            }
+        let additions = detail["additions"].as_u64().unwrap_or(0);
+        let deletions = detail["deletions"].as_u64().unwrap_or(0);
+        let total = additions + deletions;
+        if let Some(max) = expect.diff_lines_max
+            && total > max
+        {
+            bail!(
+                "PR #{number} for '{}' had {total} changed lines, expected ≤ {max} \
+                 (likely a bloated-diff regression)",
+                expect.bookmark
+            );
+        }
+        if let Some(min) = expect.diff_lines_min
+            && total < min
+        {
+            bail!(
+                "PR #{number} for '{}' had {total} changed lines, expected ≥ {min} \
+                 (likely a dropped-change regression)",
+                expect.bookmark
+            );
         }
     }
 
